@@ -368,6 +368,14 @@ static int cmdManifestTest(int, char**) {
         }
     }
 
+    {
+        write_file(dir + "/virtual.yaml",
+                   "rigs:\n  - name: panorama\n    kind: virtual-360\n    members: [cam0, cam1]\n");
+        const auto m=manifest_read(dir + "/virtual.yaml");
+        check(m.rigs.size()==1&&m.rigs[0].kind=="virtual-360",
+              "virtual panorama provenance survives manifest parsing");
+    }
+
     std::filesystem::remove_all(dir, ec);
     std::printf("manifest: 2 camera groups, YAML and JSON agree\n");
     std::printf("%s\n", fails == 0 ? "PASS" : "FAIL");

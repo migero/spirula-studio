@@ -966,6 +966,55 @@ int main() {
             }
         }
         {
+            // Weights are noise, so no mask is comparable; instance ids are not.
+            // One seed per camera: without a reset cam1 carries cam0's
+            // propagated instance as well as its own seed, and so holds two.
+            sam::MaskOptions mo;
+            mo.model = path;
+            mo.video = true;
+            sam::SeedPrompt a, b;                   // frame ids are flat, as the
+            a.object = 0;                           // GUI's walk numbers them
+            a.frame = 0;
+            a.prompt.pos_points.push_back({70.0f, 55.0f});
+            b.object = 1;
+            b.frame = 1;
+            b.prompt.pos_points.push_back({50.0f, 45.0f});
+            mo.seeds = {a, b};
+
+            sam::Masker masker;
+            std::string err;
+            if (!masker.init(mo, err)) {
+                std::printf("  FAIL camera-keyed masker init: %s\n", err.c_str());
+                ++g_failures;
+            } else {
+                auto distinct = [&](int64_t frame, const char* cam) {
+                    sam::Mask m;
+                    sam::Result r;
+                    if (!masker.run(make_image(160, 120), m, &r, frame, nullptr,
+                                    cam)) {
+                        std::printf("  FAIL %s frame %lld: %s\n", cam,
+                                    (long long)frame, masker.lastError().c_str());
+                        ++g_failures;
+                        return -1;
+                    }
+                    std::vector<int> seen;
+                    for (const auto& d : r.detections)
+                        if (std::find(seen.begin(), seen.end(), d.instance_id) ==
+                            seen.end())
+                            seen.push_back(d.instance_id);
+                    return (int)seen.size();
+                };
+                check(distinct(0, "cam0") == 1, "cam0 holds only its own seed");
+                check(distinct(1, "cam1") == 1,
+                      "cam1 holds only its own seed: cam0's track was dropped");
+                sam::Mask m;
+                sam::Result r;
+                const bool ran = masker.run(make_image(160, 120), m, &r, 2);
+                check(ran && m.width == 160 && m.height == 120,
+                      "an unnamed camera keeps tracking and still masks");
+            }
+        }
+        {
             sam::MaskOptions mo;
             mo.model = p2;
             mo.feature_text = "sky";

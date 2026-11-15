@@ -9,6 +9,7 @@
 // frames themselves.
 
 #include "app/FrameMotion.h"
+#include "app/FrameGps.h"
 
 #include <atomic>
 #include <functional>
@@ -24,6 +25,10 @@ struct FrameSelectOptions {
     // the sharpest of `window` candidates around each chosen one is kept.
     bool  adaptive = false;
     float range = 4.0f;
+    double gps_spacing_m = 0;
+    std::string gps_input;
+    double gps_fps = 0;
+    double gps_time_offset_s = 0;
     int   window = 3;
     app::MotionView view = app::MotionView::Planar;
     // Set when the candidates are 360 canvases. An EAC one is measured on its

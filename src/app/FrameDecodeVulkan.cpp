@@ -107,7 +107,7 @@ bool measure_motion_vulkan(const FrameExtractJob& o, const FrameExtractSinks& si
             }
             break;
         }
-        if (h.index % stride == 0) {
+        if (h.index % stride == 0 && h.index >= o.start_frame) {
             if (!pipe.toGray(h, mo.width, mo.height, gray, error)) {
                 pipe.release(h);
                 stop();
@@ -169,7 +169,7 @@ bool decode_lockstep_vulkan(const FrameExtractJob& o, const FrameExtractSinks& s
     };
     std::deque<Buffered> window;
     const int keep = o.keep;
-    SelectClock clock{o.keep, o.skip, plan, 0};
+    SelectClock clock{o.keep, o.skip, plan, 0, o.start_frame};
     int written = 0;
     bool measured_pending = false;
 
@@ -421,6 +421,8 @@ bool extract_frames_at(const std::string& input, const FrameLook& look_in,
             }
         pano360_canvas(look.eac, img[0].data.data(),
                        np > 1 ? img[1].data.data() : nullptr, canvas.data());
+        pano360_sharpen(canvas.data(), look.eac.canvasW(), look.eac.canvasH(),
+                        look.eac, look.pano_sharpen, 0);
         nn::Image out;
         out.width = map.width;
         out.height = map.height;

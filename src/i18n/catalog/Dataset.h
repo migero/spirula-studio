@@ -2781,6 +2781,32 @@ SS_MSG(video_fps_this_one_help,
        "izlediği anlamına gelir; o hızı yeniden yazınca yine izler. "
        "0 onun her karesini tutar."));
 
+SS_MSG(start_seconds_help,
+    EN("Skip the first seconds of this video; the tracking outlines of a .360 "
+       "often begin several seconds in."),
+    JA("この動画の冒頭の数秒をスキップします。.360 のトラッキングの輪郭は数秒"
+       "後から始まることがよくあります。"),
+    ZH_HANS("跳过这个视频的开头几秒。.360 的跟踪轮廓常常要从几秒后才开始。"),
+    ZH_HANT("跳過這個影片的開頭幾秒。.360 的追蹤輪廓常常要從幾秒後才開始。"),
+    KO("이 동영상의 첫 몇 초를 건너뜁니다. .360의 추적 윤곽은 몇 초 뒤에야 "
+       "시작되는 경우가 많습니다."),
+    DE("Die ersten Sekunden dieses Videos überspringen; die Tracking-Umrisse "
+       "einer .360 beginnen oft erst einige Sekunden später."),
+    FR("Passer les premières secondes de cette vidéo ; les contours de suivi "
+       "d'une .360 commencent souvent plusieurs secondes après."),
+    ES("Saltarse los primeros segundos de este vídeo; los contornos de "
+       "seguimiento de un .360 suelen empezar varios segundos después."),
+    PT("Saltar os primeiros segundos deste vídeo; os contornos de rastreio de "
+       "um .360 costumam começar vários segundos depois."),
+    IT("Salta i primi secondi di questo video; i contorni di tracking di un "
+       ".360 spesso iniziano alcuni secondi dopo."),
+    NL("De eerste seconden van deze video overslaan; de tracking-contouren van "
+       "een .360 beginnen vaak pas enkele seconden later."),
+    RU("Пропустить первые секунды этого видео; контуры слежения у .360 часто "
+       "начинаются лишь через несколько секунд."),
+    TR("Bu videonun ilk saniyelerini atla; bir .360'un takip konturları "
+       "genellikle birkaç saniye sonra başlar."));
+
 SS_MSG(adaptive_fps,
     EN("Adapt the rate to the motion"),
     JA("動きに合わせてレートを変える"),
@@ -2865,6 +2891,39 @@ SS_MSG(adaptive_fps_every_frame,
        "под движение ни на что не влияет."),
     TR("Her video her kareyi tutuyor (0 fps), bu yüzden hızı harekete göre "
        "ayarlamanın etkisi yok."));
+
+SS_MSG(gps_spacing,
+     EN("Space frames by GPS distance"), JA("GPS距離でフレームを間隔化"),
+     ZH_HANS("按 GPS 距离间隔帧"), ZH_HANT("依 GPS 距離間隔影格"),
+     KO("GPS 거리로 프레임 간격 조정"), DE("Bilder nach GPS-Entfernung verteilen"),
+     FR("Espacer les images selon la distance GPS"), ES("Espaciar fotogramas por distancia GPS"),
+     PT("Espaçar quadros pela distância GPS"), IT("Distanziare i fotogrammi per distanza GPS"),
+     NL("Beelden volgens GPS-afstand verdelen"), RU("Размещать кадры по расстоянию GPS"),
+     TR("Kareleri GPS mesafesine göre arala"));
+
+SS_MSG(gps_spacing_help,
+     EN("Ignore the frame rate and keep the sharpest frame after each travelled distance. "
+        "Uses GPS samples from the video; stationary or stale GPS adds no frames."),
+     JA("フレームレートを無視し、移動距離ごとに最も鮮明なフレームを残します。動画のGPSを使い、停止中や古いGPSでは追加しません。"),
+     ZH_HANS("忽略帧率，按移动距离保留最清晰的帧。使用视频 GPS；静止或过期的 GPS 不会增加帧。"),
+     ZH_HANT("忽略影格率，依移動距離保留最清晰的影格。使用影片 GPS；靜止或過期的 GPS 不會增加影格。"),
+     KO("프레임 속도를 무시하고 이동 거리마다 가장 선명한 프레임을 남깁니다. 동영상 GPS를 사용하며 정지하거나 오래된 GPS에서는 추가하지 않습니다."),
+     DE("Die Bildrate ignorieren und nach jeder Entfernung das schärfste Bild behalten. Verwendet GPS aus dem Video; Stillstand oder veraltetes GPS fügt keine Bilder hinzu."),
+     FR("Ignorer le débit et conserver l'image la plus nette après chaque distance parcourue. Utilise le GPS de la vidéo ; un GPS immobile ou périmé n'ajoute rien."),
+     ES("Ignora la tasa y conserva el fotograma más nítido tras cada distancia recorrida. Usa el GPS del vídeo; un GPS quieto u obsoleto no añade fotogramas."),
+     PT("Ignora a taxa e mantém o quadro mais nítido após cada distância percorrida. Usa o GPS do vídeo; GPS parado ou antigo não acrescenta quadros."),
+     IT("Ignora la frequenza e conserva il fotogramma più nitido dopo ogni distanza percorsa. Usa il GPS del video; GPS fermo o obsoleto non aggiunge fotogrammi."),
+     NL("Negeer de beeldsnelheid en bewaar het scherpste beeld na elke afgelegde afstand. Gebruikt GPS uit de video; stilstaande of oude GPS voegt niets toe."),
+     RU("Игнорировать частоту и оставлять самый резкий кадр после каждого пройденного расстояния. Используется GPS видео; неподвижный или устаревший GPS кадров не добавляет."),
+     TR("Kare hızını yok sayıp kat edilen her mesafeden sonra en net kareyi tutar. Videodaki GPS'i kullanır; sabit veya eski GPS kare eklemez."));
+
+SS_MSG(gps_spacing_distance,
+     EN("distance between frames (metres)"), JA("フレーム間の距離（メートル）"),
+     ZH_HANS("帧间距离（米）"), ZH_HANT("影格間距離（公尺）"), KO("프레임 간 거리(미터)"),
+     DE("Entfernung zwischen Bildern (Meter)"), FR("distance entre images (mètres)"),
+     ES("distancia entre fotogramas (metros)"), PT("distância entre quadros (metros)"),
+     IT("distanza tra fotogrammi (metri)"), NL("afstand tussen beelden (meter)"),
+     RU("расстояние между кадрами (метры)"), TR("kareler arası mesafe (metre)"));
 
 SS_MSG(adaptive_range,
     EN("Spread"),
@@ -2952,93 +3011,193 @@ SS_MSG(pano360_output_equirect,
     RU("Равнопромежуточная панорама"),
     TR("Eş dikdörtgen panorama"));
 
+SS_MSG(pano360_output_corners,
+    EN("Corner views (4 per lens)"),
+    JA("コーナービュー（レンズごと 4 枚）"),
+    ZH_HANS("角落视角（每镜头 4 个）"),
+    ZH_HANT("角落視角（每鏡頭 4 個）"),
+    KO("코너 뷰(렌즈당 4개)"),
+    DE("Eckansichten (4 je Objektiv)"),
+    FR("Vues d'angle (4 par objectif)"),
+    ES("Vistas de esquina (4 por objetivo)"),
+    PT("Vistas de canto (4 por lente)"),
+    IT("Viste agli angoli (4 per obiettivo)"),
+    NL("Hoekaanzichten (4 per lens)"),
+    RU("Угловые виды (4 на объектив)"),
+    TR("Köşe görünümleri (lens başına 4)"));
+
+SS_MSG(pano360_output_fisheye,
+    EN("Fisheye views (2 per lens)"),
+    JA("魚眼ビュー（レンズごと 2 枚）"),
+    ZH_HANS("鱼眼视角（每镜头 2 个）"),
+    ZH_HANT("魚眼視角（每鏡頭 2 個）"),
+    KO("어안 뷰(렌즈당 2개)"),
+    DE("Fisheye-Ansichten (2 je Objektiv)"),
+    FR("Vues fisheye (2 par objectif)"),
+    ES("Vistas fisheye (2 por objetivo)"),
+    PT("Vistas fisheye (2 por lente)"),
+    IT("Viste fisheye (2 per obiettivo)"),
+    NL("Fisheye-aanzichten (2 per lens)"),
+    RU("Виды «рыбий глаз» (по 2 на объектив)"),
+    TR("Balık gözü görünümler (lens başına 2)"));
+
 SS_MSG(pano360_output_help,
     EN("Perspective views are what the rest of the pipeline is built for. The "
        "file is not stitched: its two lenses meet at a seam with real parallax "
-       "across it, so the sphere is cut into ten views, five per lens, none of "
-       "which crosses it -- each is then a real pinhole camera. A panorama "
-       "keeps one image per frame, but it puts both lenses into one camera, "
-       "seam and all, and reconstruction downsamples it to the same working "
-       "size as any other photo."),
+       "across it, so the sphere is cut into views that each stay on one side of "
+       "that seam, and each is then a real pinhole camera. Corner views drop the "
+       "one on the lens axis and keep four squares per lens, all 90 degrees wide; "
+       "in exchange 2% of the sphere is in no view, and every view shares one "
+       "focal length, so the whole dataset is one camera. A panorama keeps one "
+       "image per frame, but it puts both lenses into one camera, seam and all, "
+       "and reconstruction downsamples it to the same working size as any other "
+       "photo. A fisheye view holds one whole lens in one square, 180 degrees "
+       "across the circle, and is a real equidistant lens in its own right; its "
+       "corners lie outside that circle and come back black."),
     JA("透視投影のビューは以降の処理が想定している形です。このファイルはスティッチ"
-       "されておらず、2 つのレンズは視差のある継ぎ目で接します。そこで全天球をレンズ"
-       "ごとに 5 枚、計 10 枚へ切り分け、どのビューも継ぎ目をまたぎません。結果として"
-       "各ビューが本物のピンホールカメラになります。パノラマは 1 フレーム 1 枚に"
-       "保てますが、2 つのレンズを継ぎ目ごと 1 台のカメラに押し込み、復元は他の写真と"
-       "同じ作業解像度まで縮小します。"),
+       "されておらず、2 つのレンズは視差のある継ぎ目で接します。そこで全天球を、"
+       "継ぎ目の片側にとどまるビューに切り分け、各ビューを本物のピンホールカメラに"
+       "します。コーナービューはレンズ軸上にある 1 枚を省き、レンズごとに 90 度の"
+       "正方形を 4 枚残します。そのかわり全天球の 2% はどのビューにも写らず、"
+       "すべてのビューが同じ焦点距離を持つため、データセット全体が 1 台のカメラに"
+       "なります。パノラマは 1 フレーム 1 枚に保てますが、2 つのレンズを継ぎ目ごと "
+       "1 台のカメラに押し込み、復元は他の写真と同じ作業解像度まで縮小します。"
+       "魚眼ビューは 1 つのレンズ全体を 1 枚の正方形に収め、円の直径が 180 度です。"
+       "これも本物の等距離射影レンズで、正方形の隅はレンズの外なので黒くなります。"),
     ZH_HANS("透视视角是后续流程真正为之设计的形式。该文件未做拼接：两只镜头在一条带"
-            "视差的拼缝处相接，因此球面被切成十个视角、每镜头五个，没有一个跨过拼缝—"
-            "—每个视角都是真正的针孔相机。全景每帧只有一张图，却把两只镜头连同拼缝"
-            "塞进同一台相机，而且重建会把它缩小到与普通照片相同的工作分辨率。"),
+            "视差的拼缝处相接，因此球面被切成各自停留在拼缝某一侧的视角，每个视角都"
+            "是真正的针孔相机。角落视角省去镜头轴上的那一个，每个镜头保留四个 90 度的"
+            "正方形；代价是全球的 2% 不属于任何视角，而且所有视角共用一个焦距，整个"
+            "数据集就是一台相机。全景每帧只有一张图，却把两只镜头连同拼缝塞进同一台"
+            "相机，而且重建会把它缩小到与普通照片相同的工作分辨率。"
+            "鱼眼视角把一个镜头整体装进一张正方形，圆的直径为 180 度；它同样是一台"
+            "真正的等距投影相机，落在正方形角落的像素在镜头之外，会填成黑色。"),
     ZH_HANT("透視視角是後續流程真正為之設計的形式。該檔案未做拼接：兩顆鏡頭在一條帶"
-            "視差的拼縫處相接，因此球面被切成十個視角、每鏡頭五個，沒有一個跨過拼縫—"
-            "—每個視角都是真正的針孔相機。全景每格只有一張圖，卻把兩顆鏡頭連同拼縫"
-            "塞進同一台相機，而且重建會把它縮小到與一般照片相同的工作解析度。"),
+            "視差的拼縫處相接，因此球面被切成各自停留在拼縫某一側的視角，每個視角都"
+            "是真正的針孔相機。角落視角省去鏡頭軸上的那一個，每個鏡頭保留四個 90 度的"
+            "正方形；代價是全球的 2% 不屬於任何視角，而且所有視角共用一個焦距，整個"
+            "資料集就是一台相機。全景每格只有一張圖，卻把兩顆鏡頭連同拼縫塞進同一台"
+            "相機，而且重建會把它縮小到與一般照片相同的工作解析度。"
+            "魚眼視角把一個鏡頭整體裝進一張正方形，圓的直徑為 180 度；它同樣是一台"
+            "真正的等距投影相機，落在正方形角落的像素在鏡頭之外，會填成黑色。"),
     KO("원근 뷰는 이후 단계가 전제로 하는 형식입니다. 이 파일은 스티칭되어 있지 않아 "
-       "두 렌즈가 시차가 있는 이음매에서 만납니다. 그래서 구를 렌즈당 5장씩 모두 "
-       "10개의 뷰로 자르며 어느 뷰도 이음매를 가로지르지 않습니다. 그 결과 각 뷰가 "
-       "진짜 핀홀 카메라가 됩니다. 파노라마는 프레임당 한 장으로 유지되지만 두 렌즈를 "
-       "이음매째 한 카메라에 담고, 재구성이 다른 사진과 같은 작업 해상도로 줄입니다."),
+       "두 렌즈가 시차가 있는 이음매에서 만납니다. 그래서 구를 이음매의 한쪽에만 "
+       "머무는 뷰로 자르고, 각 뷰를 진짜 핀홀 카메라로 만듭니다. 코너 뷰는 렌즈 축 "
+       "위의 하나를 빼고 렌즈마다 90 도 정사각형 네 개를 남깁니다. 대신 구의 2% 는 "
+       "어떤 뷰에도 들지 않고, 모든 뷰가 초점 거리를 공유하므로 데이터셋 전체가 "
+       "카메라 하나가 됩니다. 파노라마는 프레임당 한 장으로 유지되지만 두 렌즈를 "
+       "이음매째 한 카메라에 담고, 재구성이 다른 사진과 같은 작업 해상도로 줄입니다."
+       "어안 뷰는 렌즈 하나 전체를 정사각형 한 장에 담고 원의 지름이 180도입니다. "
+       "이것도 실제 등거리 렌즈이며, 정사각형 모서리에 들어오는 부분은 렌즈 밖이라 "
+       "검게 채워집니다."),
     DE("Perspektivische Ansichten sind das, worauf der Rest der Kette ausgelegt "
        "ist. Die Datei ist nicht zusammengesetzt: Ihre beiden Objektive treffen "
-       "sich an einer Naht mit echter Parallaxe, also wird die Kugel in zehn "
-       "Ansichten geschnitten, fünf je Objektiv, von denen keine sie kreuzt -- "
-       "jede ist dann eine echte Lochkamera. Ein Panorama hält jede Aufnahme in "
-       "einem Bild, steckt aber beide Objektive samt Naht in eine Kamera, und "
+       "sich an einer Naht mit echter Parallaxe, also wird die Kugel in Ansichten "
+       "geschnitten, die je auf einer Seite der Naht bleiben, und jede ist dann "
+       "eine echte Pinhole-Kamera. Eckansichten lassen die auf der Optikachse "
+       "weg und behalten vier Quadrate je Objektiv, alle 90 Grad breit; dafür "
+       "liegen 2% der Kugel in keiner Ansicht und alle Ansichten teilen eine "
+       "Brennweite, ist der ganze Datensatz eine Kamera. Ein Panorama hält ein "
+       "Bild je Aufnahme, legt aber beide Objektive samt Naht in eine Kamera, und "
        "die Rekonstruktion verkleinert es auf dieselbe Arbeitsgröße wie jedes "
-       "andere Foto."),
+       "andere Foto. Eine Fisheye-Ansicht fasst ein ganzes Objektiv in ein "
+       "Quadrat, 180 Grad über den Kreis, und ist selbst ein echtes "
+       "äquidistantes Objektiv; ihre Ecken liegen außerhalb davon und kommen "
+       "schwarz zurück."),
     FR("Les vues en perspective sont ce pour quoi la suite du traitement est "
-       "faite. Le fichier n'est pas assemblé : ses deux objectifs se rejoignent "
-       "sur une couture traversée par une vraie parallaxe, donc la sphère est "
-       "découpée en dix vues, cinq par objectif, dont aucune ne la traverse -- "
-       "chacune est alors un vrai sténopé. Un panorama garde une image par "
-       "prise, mais il met les deux objectifs dans une seule caméra, couture "
-       "comprise, et la reconstruction le réduit à la même taille de travail "
-       "que n'importe quelle photo."),
+       "faite. Le fichier n'est pas cousu : ses deux objectifs se rejoignent sur "
+       "une couture traversée par une vraie parallaxe, donc la sphère est "
+       "coupée en vues qui restent d'un côté de cette couture, et chacune est "
+       "alors une vraie caméra à trou sténopé. Les vues d'angle supprime celle "
+       "sur l'axe de l'objectif et garde quatre carrés par objectif, tous à 90 "
+       "degrés ; en échange 2% de la sphère n'est dans aucune vue et toutes les "
+       "vues partagent une même focale, donc tout le jeu de données tient dans "
+       "une caméra. Un panorama garde une image par image, mais y met les deux "
+       "objectifs avec la couture, et la reconstruction le ramène à la même "
+       "taille de travail que n'importe quelle photo. Une vue fisheye tient un "
+       "objectif entier dans un carré, 180 degrés sur le cercle, et est elle "
+       "aussi un vrai objectif équidistant ; ses coins sont hors de ce cercle et "
+       "reviennent noirs."),
     ES("Las vistas en perspectiva son aquello para lo que está hecho el resto "
-       "del proceso. El archivo no está unido: sus dos objetivos se encuentran "
-       "en una costura con paralaje real, así que la esfera se corta en diez "
-       "vistas, cinco por objetivo, y ninguna la cruza; cada una es entonces "
-       "una cámara estenopeica de verdad. Un panorama guarda una imagen por "
-       "toma, pero mete los dos objetivos en una sola cámara, costura incluida, "
-       "y la reconstrucción lo reduce al mismo tamaño de trabajo que cualquier "
-       "foto."),
+       "del proceso. El archivo no está cosido: sus dos objetivos se encuentran "
+       "en una costura con paralaje real, así que la esfera se corta en vistas "
+       "que se quedan a un lado de ella, y cada una es luego una verdadera cámara "
+       "estenopeica. Las vistas de esquina quitan la que está sobre el eje del "
+       "objetivo y conservan cuatro cuadrados por objetivo, todos de 90 grados; "
+       "a cambio el 2% de la esfera queda en ninguna vista y todas las vistas "
+       "comparten una distancia focal, así que todo el conjunto es una cámara. "
+       "Un panorama guarda una imagen por fotograma, pero mete ambos objetivos "
+       "con la costura en una sola cámara, y la reconstrucción lo reduce al "
+       "mismo tamaño de trabajo que cualquier otra foto. Una vista fisheye mete "
+       "un objetivo entero en un cuadrado, 180 grados a lo ancho del círculo, y "
+       "es también un objetivo equidistante de verdad; sus esquinas quedan fuera "
+       "de ese círculo y vuelven negras."),
     PT("As vistas em perspectiva são aquilo para que o resto do processo foi "
-       "feito. O arquivo não é costurado: suas duas lentes se encontram numa "
-       "emenda com paralaxe real, então a esfera é cortada em dez vistas, cinco "
-       "por lente, e nenhuma a atravessa -- cada uma é então uma câmera "
-       "pinhole de verdade. Um panorama guarda uma imagem por quadro, mas põe "
-       "as duas lentes numa só câmera, emenda inclusive, e a reconstrução o "
-       "reduz ao mesmo tamanho de trabalho de qualquer foto."),
-    IT("Le viste prospettiche sono ciò per cui è fatto il resto della catena. "
-       "Il file non è cucito: i suoi due obiettivi si incontrano su una "
-       "cucitura attraversata da una parallasse reale, quindi la sfera viene "
-       "tagliata in dieci viste, cinque per obiettivo, e nessuna la attraversa: "
-       "ognuna è allora una vera camera a foro stenopeico. Un panorama tiene "
-       "un'immagine per fotogramma, ma mette entrambi gli obiettivi in una sola "
-       "fotocamera, cucitura compresa, e la ricostruzione la riduce alla stessa "
-       "dimensione di lavoro di ogni altra foto."),
+       "feito. O ficheiro não está cosido: as suas duas lentes encontram-se numa "
+       "emenda com paralaxe real, por isso a esfera é cortada em vistas que ficam "
+       "de um lado dela, e cada uma é depois uma verdadeira câmera estenopeica. "
+       "As vistas de canto retiram a que está sobre o eixo da lente e ficam com "
+       "quatro quadrados por lente, todos de 90 graus; em troca 2% da esfera fica "
+       "em nenhuma vista e todas as vistas partilham uma distância focal, pelo "
+       "que todo o conjunto de dados é uma câmera. Um panorama guarda uma imagem "
+       "por quadro, mas põe as duas lentes numa só câmera, emenda inclusive, e a "
+       "reconstrução o reduz ao mesmo tamanho de trabalho de qualquer foto. Uma "
+       "vista fisheye põe uma lente inteira num quadrado, 180 graus ao longo do "
+       "círculo, e é também uma lente equidistante a sério; os seus cantos ficam "
+       "fora desse círculo e voltam pretos."),
+    IT("Le viste prospettiche sono ciò per cui è fatto il resto della catena. Il "
+       "file non è cucito: i suoi due obiettivi si incontrano su una cucitura "
+       "attraversata da una parallasse reale, quindi la sfera viene tagliata in "
+       "viste che restano da un lato di essa, e ognuna è allora una vera camera a "
+       "foro stenopeico. Le viste agli angoli tolgono quella sull'asse "
+       "dell'obiettivo e ne tengono quattro quadrate per obiettivo, tutte larghe "
+       "90 gradi; in cambio il 2% della sfera non finisce in nessuna vista e "
+       "tutte le viste condividono una sola distanza focale, così tutto il dataset "
+       "è una camera. Un panorama tiene un'immagine per fotogramma, ma mette "
+       "entrambi gli obiettivi in una sola fotocamera, cucitura compresa, e la "
+       "ricostruzione la riduce alla stessa dimensione di lavoro di ogni altra "
+       "foto. Una vista fisheye tiene un intero obiettivo in un quadrato, 180 "
+       "gradi lungo il cerchio, ed è anch'essa una vera lente equidistante; i "
+       "suoi angoli stanno fuori da quel cerchio e tornano neri."),
     NL("Perspectiefaanzichten zijn waar de rest van de keten op gebouwd is. Het "
        "bestand is niet aaneengezet: de twee lenzen komen samen op een naad met "
-       "echte parallax, dus wordt de bol in tien aanzichten gesneden, vijf per "
-       "lens, waarvan er geen enkele die naad kruist -- elk is dan een echte "
-       "gaatjescamera. Een panorama houdt één beeld per opname, maar stopt "
-       "beide lenzen mét naad in één camera, en de reconstructie verkleint het "
-       "tot dezelfde werkmaat als elke andere foto."),
-    RU("Перспективные виды — то, подо что сделана остальная часть обработки. "
-       "Файл не сшит: два его объектива сходятся на шве с настоящим "
-       "параллаксом, поэтому сфера режется на десять видов, по пять на "
-       "объектив, и ни один шов не пересекает — каждый вид тогда настоящая "
-       "камера-обскура. Панорама оставляет один снимок на кадр, но помещает оба "
-       "объектива вместе со швом в одну камеру, а реконструкция уменьшает её до "
-       "того же рабочего размера, что и любое фото."),
-    TR("Perspektif görünümler, işlem zincirinin geri kalanının tasarlandığı "
-       "biçimdir. Dosya birleştirilmemiştir: iki objektifi gerçek paralaksın "
-       "olduğu bir dikişte buluşur, bu yüzden küre objektif başına beş olmak "
-       "üzere on görünüme bölünür ve hiçbiri dikişi kesmez -- böylece her biri "
-       "gerçek bir iğne deliği kamerasıdır. Panorama kare başına tek görüntü "
-       "tutar, ama iki objektifi dikişiyle birlikte tek kameraya koyar ve geri "
-       "çatım onu da her fotoğrafla aynı çalışma boyutuna küçültür."));
+       "echte parallax, dus wordt de bol gesneden in aanzichten die aan één kant "
+       "van die naad blijven, en elk is dan een echte gaatjescamera. Hoekaanzichten "
+       "laten degene op de opticas-as weg en houden vier vierkanten per lens, alle "
+       "90 graden breed; daardoor ligt 2% van de bol in geen enkel aanzicht en "
+       "delen alle aanzichten één brandpuntsafstand, zodat de hele dataset één "
+       "camera is. Een panorama houdt één beeld per opname, maar stopt beide "
+       "lenzen mét naad in één camera, en de reconstructie verkleint het tot "
+       "dezelfde werkmaat als elke andere foto. Een fisheye-aanzicht houdt één "
+       "hele lens in één vierkant, 180 graden over de cirkel, en is zelf een "
+       "echte equidistante lens; de hoeken ervan liggen buiten die cirkel en "
+       "komen zwart terug."),
+    RU("Перспективные виды — то, подо что сделана остальная часть обработки. Файл "
+       "не сшит: его два объектива встречаются на шве с настоящей параллаксной "
+       "разницей, поэтому сфера нарезается на виды, каждый из которых остаётся по "
+       "одну сторону шва, и каждый вид — настоящая камера-объектив. Угловые виды "
+       "убирают тот, что лежит на оптической оси, и оставляют по четыре квадрата "
+       "на объектив, все шириной 90°; зато 2% сферы не попадает ни в один вид, а "
+       "у всех видов одна фокусная длина, так что весь набор — одна камера. "
+       "Панорама хранит по одному изображению на кадр, но помещает оба объектива "
+       "вместе со швом в одну камеру, а реконструкция уменьшает его до того же "
+       "рабочего размера, что и любая другая фотография. Вид «рыбий глаз» "
+       "вмещает весь объектив в один квадрат, 180 градусов по диаметру круга, и "
+       "тоже является настоящим равнопромежуточным объективом; его углы лежат "
+       "вне этого круга и остаются чёрными."),
+    TR("Perspektif görünümler, zincirin geri kalanı bunun için yapıldı. Dosya "
+       "dikilmiş değil: iki objektifi gerçek paralaks farkı olan bir dikişte "
+       "buluşuyor, bu yüzden küre tek bir tarafta kalan görünümlere bölünüyor ve "
+       "her biri gerçek bir delikli kamera oluyor. Köşe görünümleri optik eksen "
+       "üzerindekini kaldırıp her lens için 90 derece genişliğinde dört kare "
+       "bırakıyor; karşılığında kürenin %2 si hiçbir görünüme düşmüyor ve bütün "
+       "görünümler aynı odak uzaklığını paylaştığı için tüm veri seti tek bir "
+       "kamera oluyor. Panorama kare başına tek görüntü tutuyor ama iki objektifi "
+       "dikişle birlikte tek bir kameraya koyuyor, yeniden kurulum da onu diğer "
+       "her fotoğrafla aynı çalışma boyutuna küçültür. Balık gözü görünüm bir "
+       "objektifin tamamını tek bir kareye sığdırır, çemberin çapı 180 derecedir "
+       "ve kendisi de gerçek bir eş uzaklıklı objektiftir; köşeleri o çemberin "
+       "dışında kalır ve siyah gelir."));
 SS_MSG(pano360_size,
     EN("View size (px, 360 video)"),
     JA("ビューの大きさ（px、360 動画）"),
@@ -3121,6 +3280,66 @@ SS_MSG(pano360_size_help,
        "seçer: 90 derecelik bir görünümün merkez çözünürlüğünü koruması için "
        "kaynak yüzünün 1,27 katı gerekir ve fazlası köşelere gider, bu yüzden "
        "varsayılan ikisinin arasındadır. Panorama için bu, genişliğidir."));
+SS_MSG(pano360_sharpen,
+    EN("Sharpen (0-100)"),
+    JA("シャープ（0-100）"),
+    ZH_HANS("锐化（0-100）"),
+    ZH_HANT("銳化（0-100）"),
+    KO("선명하게(0-100)"),
+    DE("Schärfen (0-100)"),
+    FR("Netteté (0-100)"),
+    ES("Nitidez (0-100)"),
+    PT("Nitidez (0-100)"),
+    IT("Nitidezza (0-100)"),
+    NL("Scherpte (0-100)"),
+    RU("Резкость (0-100)"),
+    TR("Keskinlik (0-100)"));
+
+SS_MSG(pano360_sharpen_help,
+    EN("Unsharp mask on the 360 frame before it is cut into views. 0 leaves it "
+       "alone; 100 is four times the edge contrast of the untouched frame. One "
+       "pass over the whole frame is cheaper than sharpening each view."),
+    JA("360 度フレームをビューに分割する前にかけるアンシャープマスクです。0 は"
+       "そのまま、100 は元のフレームの輪郭コントラストの 4 倍です。フレーム全体への "
+       "1 回で済むため、ビューごとに掛けるより軽くなります。"),
+    ZH_HANS("在把 360 度画面切成视角之前应用的锐化遮罩。0 表示不处理，100 表示边缘"
+            "对比度达到原始画面的四倍。整帧只处理一次，比逐个视角锐化更快。"),
+    ZH_HANT("在把 360 度畫面切成視角之前套用的銳化遮罩。0 表示不處理，100 表示邊緣"
+            "對比度達到原始畫面的四倍。整幀只處理一次，比逐個視角銳化更快。"),
+    KO("360도 프레임을 뷰로 자르기 전에 적용하는 언샤프 마스크입니다. 0은 그대로 "
+       "두고, 100은 원본 프레임 가장자리 대비의 네 배입니다. 프레임 전체에 한 번만 "
+       "적용하므로 뷰마다 선명하게 하는 것보다 빠릅니다."),
+    DE("Unscharfmaskierung auf dem 360-Grad-Bild, bevor es in Ansichten "
+       "geschnitten wird. 0 lässt es unverändert, 100 ist die vierfache "
+       "Kantenkontrast-Verstärkung des Originalbildes. Ein Durchlauf über das "
+       "ganze Bild ist günstiger, als jede Ansicht einzeln zu schärfen."),
+    FR("Masque flou appliqué à l'image 360 avant sa découpe en vues. 0 la laisse "
+       "intacte ; 100 quadruple le contraste des contours de l'image d'origine. "
+       "Une seule passe sur toute l'image coûte moins cher que de nettifier "
+       "chaque vue."),
+    ES("Máscara de enfoque sobre el fotograma 360 antes de cortarlo en vistas. 0 "
+       "lo deja intacto; 100 cuadruplica el contraste de bordes del fotograma "
+       "original. Una sola pasada por todo el fotograma cuesta menos que enfocar "
+       "cada vista."),
+    PT("Máscara de nitidez sobre o quadro 360 antes de o cortar em vistas. 0 o "
+       "deixa intacto; 100 quadruplica o contraste de bordas do quadro original. "
+       "Uma única passagem pelo quadro inteiro custa menos do que nitidez em "
+       "cada vista."),
+    IT("Maschera di nitidezza sul fotogramma 360 prima di ritagliarlo in viste. "
+       "0 lo lascia intatto; 100 quadruplica il contrasto dei bordi del "
+       "fotogramma originale. Un solo passaggio sull'intero fotogramma costa "
+       "meno che nitidizzare ogni vista."),
+    NL("Onscherpemasker op het 360-beeld voordat het in aanzichten wordt "
+       "gesneden. 0 laat het ongemoeid; 100 is vier keer het randcontrast van "
+       "het origineel. Eén doorgang over het hele beeld kost minder dan elk "
+       "aanzicht apart scherpen."),
+    RU("Маска нерезкости для кадра 360 до его нарезки на виды. 0 оставляет кадр "
+       "как есть, 100 — четырёхкратный контраст краёв исходного кадра. Один "
+       "проход по всему кадру дешевле, чем повышать резкость каждого вида."),
+    TR("360 kare görünümlere bölünmeden önce uygulanan keskinleştirme maskesi. 0 "
+       "kareyi olduğu gibi bırakır, 100 özgün karenin kenar karşıtlığının dört "
+       "katıdır. Tüm kare üzerinde tek geçiş, her görünümü ayrı keskinleştirmekten "
+       "daha ucuzdur."));
 SS_MSG(pano360_colmap_warning,
     EN("COLMAP has no spherical camera. Choose perspective views, or "
        "reconstruct with the built-in engine."),
@@ -4563,6 +4782,220 @@ SS_MSG(mask_memory_frames_help,
        "maliyeti bununla orantılıdır, bu yüzden 2 ya da 3 modelin kendi 7 "
        "değerinden çok daha hızlıdır; bedeli, daha uzun süre gizlenen bir "
        "nesneyi kaybetmektir. 0 = modelin kendi değeri."));
+
+SS_MSG(mask_scan_every,
+       EN("Search all views every N frames"),
+       JA("N フレームごとに全ビューを検索"),
+       ZH_HANS("每隔 N 帧搜索全部视图"),
+       ZH_HANT("每隔 N 影格搜尋全部視圖"),
+       KO("N 프레임마다 모든 뷰 검색"),
+       DE("Alle Ansichten alle N Bilder suchen"),
+       FR("Chercher toutes les vues toutes les N images"),
+       ES("Buscar en todas las vistas cada N fotogramas"),
+       PT("Procurar em todas as vistas a cada N quadros"),
+       IT("Cerca in tutte le viste ogni N fotogrammi"),
+       NL("Alle weergaven elke N afbeelding doorzoeken"),
+       RU("Искать во всех видах раз в N кадров"),
+       TR("N karede bir tüm görünümlerde ara"));
+
+SS_MSG(mask_scan_every_help,
+       EN("A 360 capture's views are one instant seen several ways, so only "
+          "the ones a person already found can be in get searched between full "
+          "passes. Bigger is faster and slower to notice someone who walks in. "
+          "1 = every view every frame. Does nothing while feature masks are on, "
+          "because those need every view searched anyway."),
+       JA("360 撮影のビューは同一瞬間を複数の見え方で見ているため、全面検索の間は"
+          "人物が見つかった可能性のあるビューだけを検索します。大きいほど速く、"
+          "後から入ってくる人物に反応するまでに時間がかかります。1 = 毎フレーム"
+          "全ビュー。特徴量マスクが有効な場合は効果がありません（そもそも全ビュー"
+          "の検索が必要なためです）。"),
+       ZH_HANS("360 素材的不同视图是同一时刻的不同看法，因此在全面搜索之间，"
+                "只搜索已找到人物可能所在的视图。数值越大越快，但对后来走入的人"
+                "反应越慢。1 = 每帧搜索全部视图。启用特征掩码时无效，"
+                "因为那时本来就需要搜索每个视图。"),
+       ZH_HANT("360 素材的各個視圖是同一時刻的不同看法，因此在全面搜尋之間，"
+                "只搜尋已找到人物可能所在的視圖。數值越大越快，但對後來走入的人"
+                "反應越慢。1 = 每影格搜尋全部視圖。啟用特徵遮罩時無效，"
+                "因為那時本來就需要搜尋每個視圖。"),
+       KO("360 촬영의 뷰들은 같은 순간을 여러 각도로 본 것이므로, 전체 검색 "
+          "사이에 이미 찾은 사람이 있을 수 있는 뷰만 검색합니다. 값이 클수록 빠르지만 "
+          "나중에 들어오는 사람을 알아채기까지 늦어집니다. 1 = 매 프레임 전체 뷰. "
+          "특성 마스크를 켜면 효과가 없습니다. 어차피 모든 뷰를 검색해야 하기 "
+          "때문입니다."),
+       DE("Die Ansichten einer 360-Aufnahme sind derselbe Augenblick aus "
+          "mehreren Richtungen, also werden zwischen vollständigen Durchläufen nur "
+          "die Ansichten durchsucht, in denen eine bereits gefundene Person sein "
+          "kann. Größer ist schneller und bemerkt neu Hinzukommende langsamer. "
+          "1 = alle Ansichten in jedem Bild. Ohne Wirkung bei aktiven "
+          "Merkmalsmasken, denn dort werden ohnehin alle Ansichten durchsucht."),
+       FR("Les vues d'une capture 360 sont un même instant vu de plusieurs "
+          "façons : entre deux balayages complets, seules les vues où une "
+          "personne déjà trouvée pourrait être sont cherchées. Un nombre plus "
+          "grand va plus vite mais repère plus tard quelqu'un qui entre. "
+          "1 = toutes les vues à chaque image. Sans effet si les masques de "
+          "caractéristiques sont actifs, car il faut alors chercher toutes les "
+          "vues de toute façon."),
+       ES("Las vistas de una captura 360 son un mismo instante visto de varias "
+          "formas, así que entre pasadas completas solo se buscan las vistas en "
+          "las que podría estar una persona ya encontrada. Un número mayor es más "
+          "rápido y detecta más tarde a quien entre. 1 = todas las vistas en cada "
+          "fotograma. No hace nada con máscaras de características activadas, "
+          "porque entonces hay que buscar todas las vistas igualmente."),
+       PT("As vistas de uma captura 360 são o mesmo instante visto de várias "
+          "maneiras, por isso entre passagens completas só se procuram as vistas "
+          "onde uma pessoa já encontrada poderia estar. Maior é mais rápido e "
+          "demora mais a notar quem entra. 1 = todas as vistas em cada quadro. "
+          "Não faz nada com máscaras de características ligadas, porque aí é "
+          "preciso procurar todas as vistas de qualquer maneira."),
+       IT("Le viste di una ripresa 360 sono lo stesso istante visto in modi "
+          "diversi, quindi fra i passaggi completi si cercano solo le viste in "
+          "cui potrebbe trovarsi una persona già trovata. Un numero maggiore è "
+          "più veloce e nota più tardi chi entra. 1 = tutte le viste a ogni "
+          "fotogramma. Non serve con le maschere di feature attive, perché allora "
+          "vanno cercate comunque tutte le viste."),
+       NL("De weergaven van een 360-opname zijn hetzelfde moment vanuit "
+          "meerdere hoeken, dus tussen volledige doorlopen worden alleen de "
+          "weergaven doorzocht waarin een al gevonden persoon kan zijn. Groter is "
+          "sneller en merkt iemand die binnenkomt later op. 1 = alle weergaven bij "
+          "elke afbeelding. Werkt niet bij actieve kenmerksmaskers, want dan moeten "
+          "toch alle weergaven worden doorzocht."),
+       RU("Представления 360-съёмки — один и тот же момент с разных сторон, "
+          "поэтому между полными проходами проверяются только те из них, где может "
+          "оказаться уже найденный человек. Больше — быстрее, но и позже замечает "
+          "вошедшего. 1 = все представления в каждом кадре. Не действует при "
+          "включённых масках признаков: там и так нужны все представления."),
+       TR("360 kaydının görünümleri aynı anın birkaç açıdan görülüşüdür; bu "
+          "yüzden tam taramalar arasında yalnızca daha önce bulunmuş bir kişinin "
+          "bulunabileceği görünümler taranır. Daha büyük değer daha hızlıdır ama "
+          "sonradan giren birini daha geç fark eder. 1 = her karede tüm "
+          "görünümler. Özellik maskeleri açıkken etkisizdir, çünkü o durumda zaten "
+          "tüm görünümler taranmalıdır."));
+
+SS_MSG(mask_ray_stride,
+       EN("Ray sample every N pixels"),
+       JA("N ピクセルごとにレイをサンプリング"),
+       ZH_HANS("每 N 个像素采样一次射线"),
+       ZH_HANT("每 N 個像素取樣一次射線"),
+       KO("N픽셀마다 레이 샘플링"),
+       DE("Alle N Pixel einen Strahl abtasten"),
+       FR("Échantillonner un rayon tous les N pixels"),
+       ES("Muestrear un rayo cada N píxeles"),
+       PT("Amostrar um raio a cada N pixels"),
+       IT("Campiona un raggio ogni N pixel"),
+       NL("Elke N pixels een straal bemonsteren"),
+       RU("Сэмплировать луч через каждые N пикселей"),
+       TR("N pikselde bir ışın örnekle"));
+
+SS_MSG(mask_ray_stride_help,
+       EN("How finely a found person is kept as directions instead of pixels. "
+          "Bigger is faster and coarser; a person's outline gets blocky past "
+          "about 16. Only matters when the search above is skipped."),
+       JA("見つけた人物をピクセルではなく方向として保持する細かさやです。大きいほど"
+          "速く粗くなり、約 16 を超えると輪郭がブロック状になります。上の検索を"
+          "省略する場合にのみ影響します。"),
+       ZH_HANS("把已找到的人物以方向而非像素保存的精细程度。数值越大越快也越粗糙，"
+                "超过约 16 时人物轮廓会呈块状。只在上方搜索被跳过时才有影响。"),
+       ZH_HANT("把已找到的人物以方向而非像素保存的細緻程度。數值越大越快也越粗糙，"
+                "超過約 16 時人物輪廓會呈塊狀。只在上方搜尋被略過時才有影響。"),
+       KO("찾은 사람을 픽셀이 아니라 방향으로 저장할 세밀함입니다. 값이 클수록 빠르지만 "
+          "거칠어지고, 약 16을 넘으면 윤곽이 블록처럼 보입니다. 위의 검색을 건너뛸 "
+          "때에만 영향을 줍니다."),
+       DE("Wie fein eine gefundene Person als Richtungen statt als Pixel "
+          "gespeichert wird. Größer ist schneller und grober; über etwa 16 wird die "
+          "Kontur blockig. Wirkt nur, wenn die Suche oben übersprungen wird."),
+       FR("À quel niveau de finesse une personne trouvée est conservée comme "
+          "directions plutôt que comme pixels. Un nombre plus grand est plus "
+          "rapide et plus grossier ; au-delà d'environ 16 le contour devient "
+          "blocaille. Ne compte que si la recherche ci-dessus est sautée."),
+       ES("Con qué finer se guarda una persona encontrada como direcciones en "
+          "lugar de como píxeles. Mayor es más rápido y más grueso; por encima de "
+          "unos 16 el contorno queda tosco. Solo importa si se omite la búsqueda "
+          "anterior."),
+       PT("Com que finura uma pessoa encontrada é guardada como direções em vez "
+          "de píxeis. Maior é mais rápido e mais grosso; acima de cerca de 16 o "
+          "contorno fica tosco. Só importa se a procuração acima for omitida."),
+       IT("Con quale finezza una persona trovata viene conservata come direzioni "
+          "invece che come pixel. Maggiore è più veloce e più grossolano; oltre "
+          "circa 16 il contorno diventa grossolano. Conta solo se la ricerca "
+          "sopra viene saltata."),
+       NL("Hoe fijn een gevonden persoon als richtingen in plaats van pixels wordt "
+          "bewaard. Groter is sneller en grover; boven ongeveer 16 wordt de "
+          "omtrek blokkerig. Alleen relevant als de zoekopactie hierboven wordt "
+          "overgeslagen."),
+       RU("Насколько подробно найденный человек хранится как направления, а не "
+          "как пиксели. Больше — быстрее и грубее; после примерно 16 контур "
+          "становится грубым. Имеет значение, только если поиск выше пропущен."),
+       TR("Bulunan kişi piksel yerine yön olarak ne kadar ayrıntılı saklanır. "
+          "Daha büyük değer daha hızlı ama daha kaba; yaklaşık 16'yı aşınca "
+          "kenar bloklu görünür. Yalnızca yukarıdaki arama atlanırsa önemlidir."));
+
+SS_MSG(mask_merge_cos,
+       EN("Merge people closer than this"),
+       ZH_HANS("合并比此更近的人物"),
+       ZH_HANT("合併比此更近的人物"),
+       JA("これより近い人物を統合"),
+       KO("이보다 가까운 사람 합치기"),
+       DE("Personen näher als dies zusammenfassen"),
+       FR("Fusionner les personnes plus proches que ceci"),
+       ES("Fusionar personas más cercanas que esto"),
+       PT("Fundir pessoas mais próximas que isto"),
+       IT("Unisci persone più vicine di così"),
+       NL("Personen dichterbij dan dit samenvoegen"),
+       RU("Объединять людей ближе этого"),
+       TR("Bundan daha yakın kişileri birleştir"));
+
+SS_MSG(mask_merge_cos_help,
+       EN("How close two people may be and still count as one, as a cosine. "
+          "0.98 is about 11 degrees, which keeps neighbours separate. Lower it "
+          "and two people standing close enough to share a direction fuse into a "
+          "single track that follows whichever moved further."),
+       JA("2 人の人物が 1 人として扱われる近さをコサインで表します。0.98 は約 11 度で、"
+          "隣の人物を別々に保ちます。下げると、方向を共有するくらい近い 2 人が 1 人に"
+          "統合され、跟踪其中移動較多的一方になります。"),
+       ZH_HANS("两个人仍算作一个人的接近程度，以余弦表示。0.98 约为 11 度，能把相邻的"
+                "人区分开。调低后，距离近到共享方向的两人的会合为一个跟踪，并跟随"
+                "移动较多的那一个。"),
+       ZH_HANT("兩個人仍算作一個人的接近程度，以餘弦表示。0.98 約為 11 度，能把相鄰的"
+                "人區分開。調低後，距離近到共用方向的兩人的合為一個追蹤，並跟隨"
+                "移動較多的那一個。"),
+       KO("두 사람이 한 명으로 처리되는 근접도를 코사인으로 나타냅니다. 0.98은 약 "
+          "11도이며 이웃한 사람을 따로 유지합니다. 낮추면 방향을 공유할 만큼 가까운 "
+          "두 사람이 하나로 합쳐져 더 멀리 움직인 쪽을 따라갑니다."),
+       DE("Wie nah zwei Personen sein dürfen und noch als eine gelten, als Kosinus. "
+          "0.98 sind etwa 11 Grad und hält Nachbarn getrennt. Tiefer gesetzt "
+          "verschmelzen zwei Personen, die so nah stehen, dass sie eine Richtung "
+          "teilen, zu einem Track, der der weiter gewanderte Person folgt."),
+       FR("À quelle distance deux personnes peuvent encore compter pour une "
+          "seule, en cosinus. 0.98 vaut environ 11 degrés et garde les voisins "
+          "séparés. Réduisez-le et deux personnes assez proches pour partager une "
+          "direction n'en font plus qu'une, suivant celle qui s'est le plus "
+          "déplacée."),
+       ES("A qué distancia dos personas pueden seguir contando como una, en "
+          "coseno. 0.98 son unos 11 grados y mantiene separados a los vecinos. "
+          "Bájalo y dos personas lo bastante cerca como para compartir una "
+          "dirección se funden en un único rastro que sigue a quien más se movió."),
+       PT("A que distância duas pessoas podem continuar a contar como uma, em "
+          "cosseno. 0.98 é cerca de 11 graus e mantém vizinhos separados. "
+          "Baixe-o e duas pessoas tão perto que partilham uma direção fundem-se "
+          "num único rasto que segue quem mais se mexeu."),
+       IT("A che distanza due persone possono ancora contare come una, in "
+          "coseno. 0.98 corrisponde a circa 11 gradi e tiene separati i vicini. "
+          "Abbassalo e due persone abbastanza vicine da condividere una direzione "
+          "si fondono in un'unica traccia che segue chi si è mosso di più."),
+       NL("Hoe dicht twee personen bij elkaar mogen zijn en nog als een tellen, "
+          "als cosinus. 0,98 is ongeveer 11 graden en houdt buren gescheiden. "
+          "Verlaag het en twee personen die dicht genoeg bij elkaar staan om een "
+          "richting te delen, smelten samen tot één spoor dat volgt wie het verst "
+          "bewoog."),
+       RU("Насколько близко две люди могут стоять и всё ещё считаться одним "
+          "человеком, в косинусе. 0.98 — это примерно 11 градусов, что держит "
+          "соседей раздельно. Уменьшите, и двое людей, стоящие достаточно близко, "
+          "чтобы иметь общее направление, сольются в одну дорожку, которая "
+          "следует за тем, кто больше сдвинулся."),
+       TR("İki kişinin tek kişi sayılabileceği kadar yakınlık, kosinüs olarak. "
+          "0,98 yaklaşık 11 derecedir ve komşuları ayrı tutar. Düşürürseniz aynı "
+          "yönü paylaşacak kadar yakın iki kişi tek bir izde birleşir ve daha çok "
+          "hareket eden kişiyi izler."));
 
 SS_MSG(use_found_masks,
     EN("Use the masks found next to the photos"),
@@ -8779,13 +9212,89 @@ SS_MSG(sfm_exif_attitude_help,
        "с реконструкцией, остаются в меньшинстве, а набор, которому она "
        "противоречит, не используется. «Не использовать» — для камеры, которая "
        "заведомо пишет неверные углы."),
-    TR("Bir dronun her fotoğrafa yazdığı kamera duruşunu -- gimbalın sapma, "
-       "yunuslama ve yatış açılarını -- kullanarak yukarıyı ve kuzeyi belirler. "
-       "Bu olmadan yukarı, kameraların nasıl tutulduğundan tahmin edilir; bu da "
-       "aşağı bakan ya da gimbalın ters çevirdiği bir kamerada başarısız olur. "
-       "Yeniden yapılandırmayla çelişen fotoğraflar oylamada azınlıkta kalır ve "
-       "onun çeliştiği bir küme kullanılmaz. Yok say, açıları yanlış yazdığı "
-       "bilinen bir kamera içindir."));
+     TR("Bir dronun her fotoğrafa yazdığı kamera duruşunu -- gimbalın sapma, "
+        "yunuslama ve yatış açılarını -- kullanarak yukarıyı ve kuzeyi belirler. "
+        "Bu olmadan yukarı, kameraların nasıl tutulduğundan tahmin edilir; bu da "
+        "aşağı bakan ya da gimbalın ters çevirdiği bir kamerada başarısız olur. "
+        "Yeniden yapılandırmayla çelişen fotoğraflar oylamada azınlıkta kalır ve "
+        "onun çeliştiği bir küme kullanılmaz. Yok say, açıları yanlış yazdığı "
+        "bilinen bir kamera içindir."));
+
+SS_MSG(sfm_gps_max_error,
+    EN("GPS tolerance (m)"),
+    JA("GPS の許容誤差 (m)"),
+    ZH_HANS("GPS 容差 (米)"),
+    ZH_HANT("GPS 容差 (公尺)"),
+    KO("GPS 허용 오차 (m)"),
+    DE("GPS-Toleranz (m)"),
+    FR("Tolérance GPS (m)"),
+    ES("Tolerancia del GPS (m)"),
+    PT("Tolerância do GPS (m)"),
+    IT("Tolleranza GPS (m)"),
+    NL("GPS-tolerantie (m)"),
+    RU("Допуск GPS (м)"),
+    TR("GPS toleransı (m)"));
+
+SS_MSG(sfm_gps_max_error_help,
+    EN("How far a camera may sit from its GPS position and still count as a match, in "
+       "metres. It is the inlier radius of the fit and how hard each frame is pulled onto "
+       "its own fix. 5 suits a consumer receiver; below about 3 the leash is shorter than "
+       "the slow drift consecutive fixes share, and a long walk starts pulling against it."),
+    JA("カメラが GPS の位置から何メートル離れていても整合とみなすかをメートルで表します。"
+       "位置当てはめの外れ値半径であり、各フレームをその測位位置へ引き戻す強さでもあります。"
+       "5 は民生用受信機に合い、3 を下 回ると連続する測位どうしが共有するゆっくりした"
+       "漂流より拘束が強くなり、長時間の歩行ではそれと拉扯します。"),
+    ZH_HANS("相机可以离它的 GPS 位置多远仍算作一个测量结果，单位是米。它既是位置拟合的外点"
+            "半径，也是把每一帧拉向自己测位位置的力度。5 适合消费级接收机；低于 3 时约束会比"
+            "连续测位之间共有的缓慢漂移更紧，走得较远的素材就会与它拉扯。"),
+    ZH_HANT("相機可以離它的 GPS 位置多遠仍算作一個量測結果，單位是公尺。它既是位置擬合的外點"
+            "半徑，也是把每一幀拉向自己測位位置的力道。5 適合消費級接收機；低於 3 時約束會比"
+            "連續測位之間共有的緩慢漂移更緊，走得較遠的素材就會與它拉扯。"),
+    KO("카메라가 GPS 위치에서 몇 미터 떨어져 있어도 일치로 볼지 미터로 정합니다. 위치 "
+       "맞춤의 이상치 반지름이며, 각 프레임을 자기 측위 위치로 끌어당기는 힘이기도 합니다. "
+       "5 는 소비자 수신기에 맞고, 3 보다 작으면 연속 측위가 공유하는 느린 표류보다 제약이 "
+       "강해져 오래 걷는 영상에서는 그것과 서로 당깁니다."),
+    DE("Wie weit eine Kamera von ihrer GPS-Position entfernt sein darf und noch als passend "
+       "gilt, in Metern. Das ist der Ausreißerradius der Anpassung und wie stark jeder Frame "
+       "auf seinen eigenen Fix gezogen wird. 5 passt zu einem Verbraucherempfänger; unter "
+       "etwa 3 wird die Leine kürzer als die langsame Drift, die aufeinanderfolgende Fixes "
+       "teilen, und eine lange Wanderung zieht dagegen."),
+    FR("De combien de mètres une caméra peut s'éloigner de sa position GPS et rester "
+       "considérée comme concordante. C'est le rayon d'aberrant de l'ajustement et la force "
+       "avec laquelle chaque image est ramenée vers son propre point. 5 convient à un "
+       "récepteur grand public ; en dessous de 3, la laisse devient plus courte que la "
+       "lente dérive que partagent les points successifs, et une longue marche tire en sens "
+       "opposé."),
+    ES("Cuántos metros puede alejarse una cámara de su posición GPS y seguir contando como "
+       "coincidencia. Es el radio de atípicos del ajuste y con cuánta fuerza se tira de cada "
+       "fotograma hacia su propia posición. 5 sirve para un receptor de consumo; por debajo "
+       "de 3, la correa queda más corta que la lenta deriva que comparten las posiciones "
+       "sucesivas, y un recorrido largo tira en contra."),
+    PT("Quantos metros uma câmara pode afastar-se da sua posição GPS e continuar a contar "
+       "como correspondência. É o raio de atípicos do ajuste e com que força cada imagem é "
+       "puxada para a sua própria posição. 5 serve para um recetor de consumo; abaixo de 3, a "
+       "treta fica mais curta do que a deriva lenta que as posições sucessivas partilham, e um "
+       "percurso longo puxa contra ela."),
+    IT("Quanti metri una telecamera può allontanarsi dalla sua posizione GPS e contare "
+       "comunque come corrispondenza. È il raggio degli anomali della stima e quanto ogni "
+       "fotogramma viene tirato verso la propria posizione. 5 sta bene per un ricevitore "
+       "consumer; sotto 3 il guinzaglio diventa più corto della lenta deriva che le posizioni "
+       "successive condividono, e una camminata lunga tira contro."),
+    NL("Hoe ver een camera van haar GPS-positie mag afwijken en nog als overeenkomst telt, in "
+       "meters. Het is de uitschietersstraal van de passing en hoe sterk elk beeld naar zijn "
+       "eigen fix wordt getrokken. 5 past bij een consumentenontvanger; onder 3 wordt de lijn "
+       "korter dan de trage drift die opeenvolgende fixes delen, en een lange wandeling "
+       "trekt ertegen."),
+    RU("На сколько метров камера может отойти от своей позиции GPS и всё ещё считаться "
+       "совпадением. Это радиус выбросов подгонки и то, насколько сильно каждый кадр "
+       "притягивается к своему фиксу. Значение 5 подходит бытовому приёмнику; ниже примерно "
+       "3 ограничение оказывается короче медленного дрейфа, общего для последовательных "
+       "фиксов, и длинная прогулка начинает тянуть против него."),
+    TR("Bir kameranın GPS konumundan kaç metre uzakta olması hâlâ eşleşme sayılır, metre "
+       "cinsinden. Bu, uygunluğun aykırı nokta yarıçapı ve her karenin kendi konumuna ne kadar "
+       "çekildiğidir. 5 tüketici alıcısına uygundur; 3 'ün altında tasma, ardışık konumların "
+       "paylaştığı yavaş sürüklenmeden daha kısa kalır ve uzun bir yürüyüş ona karşı çeker."));
+
 
 SS_MSG(sensors_reading,
     EN("reading sensors..."),
@@ -14116,6 +14625,90 @@ SS_MSG(mask_subject_polarity_help,
        "Уберите его, когда мешает он сам."),
     TR("Nesne çekiminde özneyi koruyun: çevresindeki her şey yok sayılır. Engel olan "
        "özneyse onu kaldırın."));
+
+SS_MSG(gopro_tracking,
+    EN("Use GoPro tracking crops for people and shadows"),
+    JA("人物と影に GoPro の追跡画像を使用"),
+    ZH_HANS("使用 GoPro 跟踪裁剪处理人物和阴影"),
+    ZH_HANT("使用 GoPro 追蹤裁切處理人物和陰影"),
+    KO("사람과 그림자에 GoPro 추적 이미지 사용"),
+    DE("GoPro-Verfolgungsbilder für Personen und Schatten verwenden"),
+    FR("Utiliser les vues suivies GoPro pour les personnes et les ombres"),
+    ES("Usar vistas seguidas de GoPro para personas y sombras"),
+    PT("Usar vistas rastreadas GoPro para pessoas e sombras"),
+    IT("Usa viste tracciate GoPro per persone e ombre"),
+    NL("GoPro-volgbeelden gebruiken voor personen en schaduwen"),
+    RU("Использовать отслеживаемые виды GoPro для людей и теней"),
+    TR("İnsanlar ve gölgeler için GoPro takip görüntülerini kullan"));
+
+SS_MSG(gopro_renderer,
+    EN("GoPro renderer (optional path)"),
+    JA("GoPro レンダラー（任意のパス）"),
+    ZH_HANS("GoPro 渲染器（可选路径）"),
+    ZH_HANT("GoPro 算圖程式（選填路徑）"),
+    KO("GoPro 렌더러 (선택 경로)"),
+    DE("GoPro-Renderer (optionaler Pfad)"),
+    FR("Moteur GoPro (chemin facultatif)"),
+    ES("Renderizador GoPro (ruta opcional)"),
+    PT("Renderizador GoPro (caminho opcional)"),
+    IT("Renderer GoPro (percorso facoltativo)"),
+    NL("GoPro-renderer (optioneel pad)"),
+    RU("Рендерер GoPro (необязательный путь)"),
+    TR("GoPro işleyici (isteğe bağlı yol)"));
+
+SS_MSG(gopro_cache_folder,
+    EN("Tracking BIN folder (optional path)"),
+    JA("追跡 BIN フォルダー（任意のパス）"),
+    ZH_HANS("跟踪 BIN 文件夹（可选路径）"),
+    ZH_HANT("追蹤 BIN 資料夾（選填路徑）"),
+    KO("추적 BIN 폴더 (선택 경로)"),
+    DE("Tracking-BIN-Ordner (optionaler Pfad)"),
+    FR("Dossier BIN de suivi (chemin facultatif)"),
+    ES("Carpeta BIN de seguimiento (ruta opcional)"),
+    PT("Pasta BIN de rastreamento (caminho opcional)"),
+    IT("Cartella BIN del tracciamento (percorso facoltativo)"),
+    NL("BIN-map voor tracking (optioneel pad)"),
+    RU("Папка BIN отслеживания (необязательный путь)"),
+    TR("Takip BIN klasörü (isteğe bağlı yol)"));
+
+SS_MSG(gopro_tracking_help,
+    EN("SAM masks tracked GoPro crops, then projects them into Perspective or Corner views. Empty tracking scans all directions. Masks are regenerated; sky masks still use dataset views. Empty paths use the renderer beside Spirula and its tracking folder."),
+    JA("SAM で GoPro の追跡画像をマスクし、透視ビューまたはコーナービューへ投影します。追跡が空なら全方向を処理します。マスクは再生成され、空のマスクはデータセット画像で処理されます。パスが空なら Spirula と同じ場所のレンダラーと追跡フォルダーを使います。"),
+    ZH_HANS("SAM 处理 GoPro 跟踪裁剪，再投影到透视或角落视图。跟踪为空时扫描所有方向。重新生成遮罩；天空遮罩仍使用数据集视图。路径留空时使用 Spirula 旁的渲染器及其跟踪文件夹。"),
+    ZH_HANT("SAM 處理 GoPro 追蹤裁切，再投影到透視或角落視圖。追蹤為空時掃描所有方向。重新產生遮罩；天空遮罩仍使用資料集視圖。路徑留空時使用 Spirula 旁的算圖程式及其追蹤資料夾。"),
+    KO("SAM이 GoPro 추적 이미지를 마스킹한 뒤 원근 또는 모서리 뷰에 투영합니다. 추적이 없으면 모든 방향을 검사합니다. 마스크를 다시 생성하며 하늘은 데이터셋 뷰에서 처리합니다. 경로가 비어 있으면 Spirula 옆의 렌더러와 추적 폴더를 사용합니다."),
+    DE("SAM maskiert verfolgte GoPro-Ausschnitte und projiziert sie in Perspektiv- oder Eckansichten. Ohne Tracking werden alle Richtungen geprüft. Masken werden neu erstellt; Himmelsmasken nutzen weiterhin die Datensatzansichten. Leere Pfade verwenden den Renderer neben Spirula und dessen Tracking-Ordner."),
+    FR("SAM masque les vues suivies GoPro, puis les projette dans les vues en perspective ou de coin. Sans suivi, toutes les directions sont analysées. Les masques sont régénérés ; le ciel utilise les vues du jeu de données. Les chemins vides utilisent le moteur à côté de Spirula et son dossier de suivi."),
+    ES("SAM enmascara las vistas seguidas de GoPro y las proyecta en vistas de perspectiva o esquina. Sin seguimiento se analizan todas las direcciones. Se regeneran las máscaras; el cielo usa las vistas del conjunto. Las rutas vacías usan el renderizador junto a Spirula y su carpeta de seguimiento."),
+    PT("SAM mascara as vistas rastreadas GoPro e as projeta nas vistas de perspectiva ou canto. Sem rastreamento, todas as direções são analisadas. As máscaras são regeneradas; o céu usa as vistas do conjunto. Caminhos vazios usam o renderizador ao lado do Spirula e sua pasta de rastreamento."),
+    IT("SAM maschera le viste tracciate GoPro e le proietta nelle viste prospettiche o angolari. Senza tracciamento analizza tutte le direzioni. Le maschere vengono rigenerate; il cielo usa le viste del dataset. I percorsi vuoti usano il renderer accanto a Spirula e la sua cartella di tracciamento."),
+    NL("SAM maskeert gevolgde GoPro-beelden en projecteert ze in perspectief- of hoekbeelden. Zonder tracking worden alle richtingen onderzocht. Maskers worden opnieuw gemaakt; de lucht gebruikt datasetbeelden. Lege paden gebruiken de renderer naast Spirula en zijn trackingmap."),
+    RU("SAM маскирует отслеживаемые виды GoPro и проецирует их в перспективные или угловые виды. Без отслеживания проверяются все направления. Маски создаются заново; небо обрабатывается на видах набора данных. Пустые пути используют рендерер рядом со Spirula и его папку отслеживания."),
+    TR("SAM, GoPro takip görüntülerini maskeler ve perspektif veya köşe görünümlerine yansıtır. Takip yoksa tüm yönler taranır. Maskeler yeniden üretilir; gökyüzü veri kümesi görünümlerini kullanır. Boş yollar Spirula yanındaki işleyiciyi ve takip klasörünü kullanır."));
+
+SS_MSG(gopro_bin_hint,
+    EN("With the renderer field left empty, the masks come straight from the Player's "
+       "tracking file and SAM is not needed."),
+    JA("レンダラーパスを空のままにすると、マスクはプレーヤーの追跡ファイルから直接取得され、SAM は不要です。"),
+    ZH_HANS("渲染器路径留空时，遮罩直接取自播放器的跟踪文件，无需 SAM。"),
+    ZH_HANT("算圖程式路徑留空時，遮罩直接取自播放器的追蹤檔案，無需 SAM。"),
+    KO("렌더러 경로를 비워 두면 마스크는 플레이어의 추적 파일에서 직접 가져오며 SAM이 필요하지 않습니다."),
+    DE("Bleibt das Renderer-Feld leer, kommen die Masken direkt aus der "
+       "Tracking-Datei des Players, und SAM wird nicht benötigt."),
+    FR("Si le champ du moteur de rendu reste vide, les masques viennent "
+       "directement du fichier de suivi du lecteur, et SAM n'est pas nécessaire."),
+    ES("Si el campo del renderizador se deja vacío, las máscaras se toman "
+       "directamente del archivo de seguimiento del reproductor y no se necesita SAM."),
+    PT("Com o campo do renderizador em branco, as máscaras vêm diretamente do "
+       "ficheiro de rastreamento do reprodutor e o SAM não é necessário."),
+    IT("Se il campo del renderer resta vuoto, le maschere arrivano direttamente "
+       "dal file di tracciamento del lettore e SAM non è necessario."),
+    NL("Met een leeg renderer-veld komen de maskers rechtstreeks uit het "
+       "trackbestand van de speler en is SAM niet nodig."),
+    RU("Если поле рендерера оставлено пустым, маски берутся прямо из файла "
+       "отслеживания проигрывателя, и SAM не требуется."),
+    TR("İşleyici alanı boş bırakıldığında maskeler doğrudan oynatıcının takip "
+       "dosyasından alınır ve SAM gerekmez."));
 
 }  // namespace dataset
 }  // namespace msg

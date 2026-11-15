@@ -267,6 +267,52 @@ void test_model_masking_needs_segmentation() {
           "no segmentation module: a model-masking run is refused: " + err);
 }
 
+// The view gate's grouping: a 360 capture's ten folders must become ten views
+// of one instant, not ten camera-major runs. Stands in the layout a real .360
+// dataset has -- images/camN/00009.jpg, the same stem numbers in every folder.
+void test_gate_groups_views_of_one_instant() {
+    std::vector<app::Pano360View> views;
+    for (int v = 0; v < 10; v++) {
+        app::Pano360View pv;
+        pv.dir = "cam" + std::to_string(v);
+        views.push_back(pv);
+    }
+    std::vector<std::string> cams, stems;
+    // Camera-major on disk, as a directory walk hands them over.
+    for (int v = 0; v < 10; v++)
+        for (int f = 0; f < 3; f++) {
+            cams.push_back("cam" + std::to_string(v));
+            stems.push_back(std::string(f == 0 ? "00009" : f == 1 ? "00019" : "00029"));
+        }
+    const gui::ViewInstants g = gui::group_views_by_instant(cams, views, stems);
+    check(g.ok, "a 360 capture's folders are accepted as its views");
+    check(g.order.size() == 30, "every file is scheduled");
+    // The order must be (instant, view): instants 9, 19, 29, ten views each.
+    bool grouped = true;
+    for (size_t k = 0; k < g.order.size(); k++) {
+        const size_t want_v = (int)(k % 10), want_i = (int)(k / 10);
+        if (g.view[g.order[k]] != (int)want_v || g.instant[g.order[k]] != want_i * 10 + 9)
+            grouped = false;
+    }
+    check(grouped, "the ten views of one instant are decided together");
+}
+
+void test_gate_refuses_what_it_cannot_describe() {
+    std::vector<app::Pano360View> views;
+    for (int v = 0; v < 10; v++) views.push_back({"cam" + std::to_string(v)});
+    // A folder the plan does not name: gating on it would search a view that
+    // the rotation does not describe.
+    check(!gui::group_views_by_instant({"cam0", "cam0", "stray"}, views,
+                                        {"00009", "00009", "00009"}).ok,
+          "a folder outside the plan refuses the gate");
+    // A missing view: nine folders, ten planned.
+    check(!gui::group_views_by_instant({"cam0", "cam1"}, views, {"00009", "00009"}).ok,
+          "a missing view refuses the gate");
+    // A name with no frame number cannot be placed in time.
+    check(!gui::group_views_by_instant({"cam0", "cam1"}, views, {"frame_a", "frame_b"}).ok,
+          "a name without a frame number refuses the gate");
+}
+
 }  // namespace
 
 int main() {
@@ -275,6 +321,8 @@ int main() {
     test_per_camera_stencil();
     test_feature_masks_workspace();
     test_model_masking_needs_segmentation();
+    test_gate_groups_views_of_one_instant();
+    test_gate_refuses_what_it_cannot_describe();
     std::printf("%s: %d failure(s)\n", SS_FILE, g_failures);
     return g_failures;
 }

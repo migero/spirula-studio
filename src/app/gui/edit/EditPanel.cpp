@@ -325,6 +325,57 @@ void EditSession::draw_status() {
 }
 
 
+// The sky dome: a hemisphere of synthetic points for a sky that has no
+// keypoints of its own. Only a points document has the cameras it is measured
+// from, so the section is hidden everywhere else.
+void EditSession::draw_sky_section(EditDoc& d, float full) {
+    auto* pts = dynamic_cast<PointsDoc*>(&d);
+    if (!pts) return;
+    const float slider_w = std::max(full * 0.45f, px(120.0f));
+
+    if (!ui::CollapsingHeader(msg::sec_sky)) return;
+    option_slider_int(*this, msg::sky_subdivisions, &_sky_subdivisions, 2, 7,
+                      slider_w);
+    ui::help_on_hover(msg::sky_subdivisions_help);
+    option_slider(*this, msg::sky_percentile, &_sky_percentile, 50.0f, 100.0f,
+                  "%.1f", slider_w);
+    ui::help_on_hover(msg::sky_percentile_help);
+
+    // What the radius would be, measured on the points as they stand and shown
+    // before the button, so the number is never a surprise. Only when nothing
+    // has been added yet: afterwards the dome is itself in the measurement.
+    if (_sky_added) {
+        char r[32];
+        std::snprintf(r, sizeof r, "%.3g", _sky_fit.radius);
+        ui::Text(msg::sky_dome_present, {(long long)_sky_fit.points, r});
+    } else {
+        std::string error;
+        const PointsDoc::DomeFit probe =
+            pts->measure_sky_dome(_sky_subdivisions, _sky_percentile, &error);
+        if (probe.present) {
+            char r[32];
+            std::snprintf(r, sizeof r, "%.3g", probe.radius);
+            ui::Text(msg::sky_dome_present, {(long long)probe.points, r});
+        } else {
+            ui::TextDisabled(msg::sky_dome_none);
+        }
+        if (!error.empty()) ui::TextDisabledRaw(error);
+    }
+
+    const bool has_cameras = pts->layer_count() > 1;
+    ImGui::BeginDisabled(!has_cameras);
+    if (ui::Button(msg::sky_dome_add, ImVec2(full, 0))) {
+        std::string error;
+        _sky_fit = pts->add_sky_dome(_sky_subdivisions, _sky_percentile, &error);
+        _sky_added = _sky_fit.present;
+        if (!_sky_added) ui::TextDisabledRaw(error);
+    }
+    ImGui::EndDisabled();
+    ui::help_on_hover(msg::sky_dome_add_help);
+    if (!has_cameras) ui::help_on_hover_disabled(msg::sky_dome_add_help);
+}
+
+
 void EditSession::draw_panel() {
     if (!_doc) return;
     EditDoc& d = *_doc;
@@ -482,6 +533,7 @@ void EditSession::draw_panel() {
 
 
             if (ui::CollapsingHeader(amsg::sec_attribute)) draw_attribute_section(full);
+            draw_sky_section(d, full);
             if (d.colours_available()) {
                 if (ui::CollapsingHeader(amsg::sec_colour)) {
                     const ToolRow& k = tool_table()[(int)ToolId::Eyedropper];

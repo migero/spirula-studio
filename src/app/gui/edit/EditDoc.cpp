@@ -75,7 +75,76 @@ void EditDoc::add_layer(const spirula::i18n::Msg& name, int64_t n,
     const double side = 2.0 * (double)L.extent;
     L.radius_hint = (float)(1.5 * side / std::cbrt((double)std::max<int64_t>(n, 1)));
     L.radius_hint = std::clamp(L.radius_hint, L.extent * 1e-4f, L.extent * 0.25f);
+    _appended.push_back(0);
     _layers.push_back(std::move(L));
+}
+
+// The framing a layer is viewed by, recomputed the way add_layer does it. A
+// dome sits outside the scene it was measured from, so leaving the old extent
+// would draw the point cloud at a fraction of its former size.
+void EditDoc::reframe(int layer) {
+    Layer& L = at(layer);
+    const int64_t n = L.count;
+    if (n <= 0) return;
+    const int64_t step = std::max<int64_t>(1, n / (1 << 20));
+    float c[3] = {0, 0, 0};
+    std::vector<float> tmp;
+    tmp.reserve((size_t)(n / step + 1));
+    for (int d = 0; d < 3; d++) {
+        tmp.clear();
+        for (int64_t i = 0; i < n; i += step) tmp.push_back(L.pos[(size_t)i * 3 + d]);
+        std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
+        c[d] = tmp[tmp.size() / 2];
+    }
+    tmp.clear();
+    for (int64_t i = 0; i < n; i += step) {
+        const float dx = L.pos[(size_t)i * 3 + 0] - c[0];
+        const float dy = L.pos[(size_t)i * 3 + 1] - c[1];
+        const float dz = L.pos[(size_t)i * 3 + 2] - c[2];
+        tmp.push_back(dx * dx + dy * dy + dz * dz);
+    }
+    std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
+    L.extent = std::max(2.0f * std::sqrt(std::max(tmp[tmp.size() / 2], 1e-24f)), 1e-6f);
+    for (int d = 0; d < 3; d++) L.middle[d] = c[d];
+    const double side = 2.0 * (double)L.extent;
+    L.radius_hint = (float)(1.5 * side / std::cbrt((double)std::max<int64_t>(n, 1)));
+    L.radius_hint = std::clamp(L.radius_hint, L.extent * 1e-4f, L.extent * 0.25f);
+}
+
+int64_t EditDoc::append_points(int layer, const std::vector<float>& positions,
+                             const uint8_t* rgb) {
+    Layer& L = at(layer);
+    const int64_t added = (int64_t)(positions.size() / 3);
+    const int64_t first = L.count;
+    L.pos.insert(L.pos.end(), positions.begin(), positions.end());
+    L.alive.insert(L.alive.end(), (size_t)added, 1);
+    L.alive_count += added;
+    L.count += added;
+    L.sel.resize(L.count);
+    if ((size_t)layer < _appended.size()) _appended[(size_t)layer] += added;
+    reframe(layer);
+    rows_appended(layer, first, added, rgb);
+    return first;
+}
+
+// Appended rows are always the tail, so this is what the layer holds beyond
+// what the file did.
+int64_t EditDoc::appended_on(int layer) const {
+    return _appended[(size_t)std::clamp(layer, 0, (int)_layers.size() - 1)];
+}
+
+void EditDoc::drop_appended(int layer, int64_t n) {
+    Layer& L = at(layer);
+    n = std::min(n, _appended[(size_t)layer]);
+    if (n <= 0) return;
+    L.pos.resize((size_t)(L.count - n) * 3);
+    L.alive.resize((size_t)(L.count - n));
+    L.sel.resize(L.count - n);
+    L.count -= n;
+    L.alive_count = L.count;
+    if ((size_t)layer < _appended.size()) _appended[(size_t)layer] -= n;
+    reframe(layer);
+    rows_dropped(layer, n);
 }
 
 void EditDoc::set_layer(int i) {
@@ -296,12 +365,45 @@ std::unique_ptr<EditOp> make_hide_op(EditDoc& doc, bool invert) {
                                     invert);
 }
 
+// The sky dome: rows that were never in the file. Undo can only have to take
+// the tail off again, since rows are appended and nothing before them moves.
+class DomeOp : public EditOp {
+public:
+    DomeOp(int layer, std::vector<float> positions, std::vector<uint8_t> rgb)
+        : _layer(layer), _pos(std::move(positions)), _rgb(std::move(rgb)) {}
+
+    void apply(EditDoc& doc) override {
+        LayerScope scope(doc, _layer);
+        doc.append_points(_layer, _pos, _rgb.empty() ? nullptr : _rgb.data());
+        doc.mark_geometry_dirty();
+    }
+    void undo(EditDoc& doc) override {
+        LayerScope scope(doc, _layer);
+        doc.drop_appended(_layer, (int64_t)(_pos.size() / 3));
+        doc.mark_geometry_dirty();
+    }
+    std::string label() const override { return msg::op_sky_dome.get(); }
+    size_t bytes() const override { return _pos.size() * sizeof(float); }
+
+private:
+    int _layer;
+    std::vector<float> _pos;
+    std::vector<uint8_t> _rgb;
+};
+
 std::unique_ptr<EditOp> make_reveal_op(EditDoc& doc) {
     std::vector<int32_t> idx;
     const uint8_t* alive = doc.alive();
     for (int64_t i = 0; i < doc.count(); i++)
         if (!alive[i]) idx.push_back((int32_t)i);
     return std::make_unique<RevealOp>(doc.layer(), std::move(idx));
+}
+
+std::unique_ptr<EditOp> make_sky_dome_op(EditDoc& doc,
+                                         std::vector<float> positions,
+                                         std::vector<uint8_t> rgb) {
+    return std::make_unique<DomeOp>(doc.layer(), std::move(positions),
+                                    std::move(rgb));
 }
 
 namespace {

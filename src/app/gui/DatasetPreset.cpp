@@ -25,6 +25,8 @@ namespace {
     X("video_fps",                  sfm.prep.video_fps)                       \
     X("adaptive_fps",               sfm.prep.adaptive_fps)                    \
     X("adaptive_range",             sfm.prep.adaptive_range)                  \
+    X("gps_spacing",                sfm.prep.gps_spacing)                     \
+    X("gps_spacing_m",              sfm.prep.gps_spacing_m)                   \
     X("sharp_window",               sfm.prep.sharp_window)                    \
     X("sync_tracks",                sfm.prep.sync_tracks)                     \
     X("max_frames",                 sfm.prep.max_frames)                      \
@@ -32,6 +34,7 @@ namespace {
     X("force_external_decode",      sfm.prep.force_external_decode)           \
     X("pano_mode",                  sfm.prep.pano.mode)                       \
     X("pano_size",                  sfm.prep.pano.size)                       \
+    X("pano_sharpen",               sfm.prep.pano.sharpen)                    \
     X("pano_yaw",                   sfm.prep.pano.yaw)                        \
     X("pano_pitch",                 sfm.prep.pano.pitch)                      \
     X("pano_roll",                  sfm.prep.pano.roll)                       \
@@ -59,6 +62,12 @@ namespace {
     X("mask_memory",                sfm.prep.mask_memory)                     \
     X("mask_detect_every",          sfm.prep.mask_detect_every)               \
     X("mask_memory_frames",         sfm.prep.mask_memory_frames)              \
+    X("gopro_tracking",              sfm.prep.gopro_tracking)                    \
+    X("gopro_renderer",              sfm.prep.gopro_renderer)                    \
+    X("gopro_cache_folder",          sfm.prep.gopro_cache_folder)                \
+    X("mask_scan_every",            sfm.prep.mask_scan_every)                 \
+    X("mask_ray_stride",            sfm.prep.mask_ray_stride)                 \
+    X("mask_merge_cos",             sfm.prep.mask_merge_cos)                  \
     /* ---- depth and normals ---- */                                         \
     X("geometry_enable",            sfm.geometry.enable)                      \
     X("geometry_model",             sfm.geometry.model)                       \
@@ -95,6 +104,7 @@ namespace {
     X("sfm_metric_gps",             sfm.metric_gps)                           \
     X("sfm_sensor_gauge",           sfm.sensor_gauge)                         \
     X("sfm_exif_attitude",          sfm.exif_attitude)                        \
+    X("sfm_gps_max_error",          sfm.gps_max_error)                        \
     X("sfm_keep_intermediate",      sfm.keep_intermediate)                    \
     X("sfm_ba_cpu",                 sfm.ba_cpu)                               \
     X("sfm_subprocess",             sfm.subprocess)                           \
@@ -205,14 +215,21 @@ bool dataset_apply_preset(DatasetSettings& s, const std::string& name) {
 void sanitize_dataset_settings(DatasetSettings& s) {
     PrepJob& p = s.sfm.prep;
     clamp_enum(p.photo_import, 0, kNumPhotoImports - 1);
-    clamp_enum(p.pano.mode, 0, (int)app::Pano360Mode::Equirect);
+    clamp_enum(p.pano.mode, 0, (int)app::Pano360Mode::Fisheye);
     clamp_to(p.pano.size, 0, 16384);
+    clamp_to(p.pano.sharpen, 0, 100);
     p.video_fps = std::clamp(p.video_fps, 0.0f, 240.0f);
     p.adaptive_range = std::clamp(p.adaptive_range, 1.0f, 64.0f);
+    p.gps_spacing_m = std::clamp(p.gps_spacing_m, 0.1f, 100000.0f);
     clamp_to(p.sharp_window, 1, 1000);
     clamp_to(p.max_frames, 1, 1000000);
     clamp_to(p.mask_detect_every, 1, 1000);
     clamp_to(p.mask_memory_frames, 0, 64);
+    clamp_to(p.mask_scan_every, 1, 1000);
+    clamp_to(p.mask_ray_stride, 1, 64);
+    // Below cos(30 deg) two people standing close enough to share a cone fuse
+    // into one, so the floor keeps a crowd from becoming a single track.
+    clamp_to(p.mask_merge_cos, 0.5f, 1.0f);
 
     MaskSettings& m = s.mask;
     clamp_to(m.max_image_size, 64, 8192);
@@ -242,6 +259,7 @@ void sanitize_dataset_settings(DatasetSettings& s) {
     clamp_to(j.metric_gps, 0, 2);
     clamp_to(j.sensor_gauge, 0, 2);
     clamp_to(j.exif_attitude, 0, 2);
+    clamp_to(j.gps_max_error, 1, 10);
     clamp_to(j.max_features, 0, 1000000);
     clamp_to(j.max_image_size, 0, 32768);
     j.init_focal_px = std::max(0.0f, j.init_focal_px);

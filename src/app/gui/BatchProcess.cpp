@@ -401,18 +401,25 @@ void check_dataset_stage(const BatchRow& row, const BatchCapabilities& caps,
     if (!have_engine) out.push_back(issue_of(msg::chk_engine_unavailable, kSt, true));
 
     if (s.sfm.prep.mask_enable) {
+        // Bin mode takes its masks from the tracker's .people.bin: no prompt
+        // and no SAM model is reached, so neither check applies.
+        const bool gopro_bin = s.sfm.prep.gopro_tracking &&
+                               s.sfm.prep.gopro_renderer.empty();
         // A batch has no clicks -- they belong to the frames they were drawn
         // on and a preset cannot carry them -- so the text prompt is the only
         // prompt there is.
         const bool prompted = !caps.mask_model_prompted || caps.mask_model_prompted(s.mask_model_id);
-        if (prompted && s.mask.prompt.empty() && s.mask.feature_prompt.empty())
+        if (!gopro_bin && prompted && s.mask.prompt.empty() &&
+            s.mask.feature_prompt.empty())
             out.push_back(issue_of(msg::chk_mask_no_prompt, kSt, true));
-        if (!caps.masking) {
-            out.push_back(issue_of(msg::chk_masking_unavailable, kSt, true));
-        } else if (caps.mask_model_ready &&
-                   !caps.mask_model_ready(s.mask_model_id, s.mask_detector_id)) {
-            out.push_back(issue_of(msg::chk_mask_model_missing, kSt, true,
-                                   s.mask_model_id));
+        if (!gopro_bin) {
+            if (!caps.masking) {
+                out.push_back(issue_of(msg::chk_masking_unavailable, kSt, true));
+            } else if (caps.mask_model_ready &&
+                       !caps.mask_model_ready(s.mask_model_id, s.mask_detector_id)) {
+                out.push_back(issue_of(msg::chk_mask_model_missing, kSt, true,
+                                       s.mask_model_id));
+            }
         }
     }
 

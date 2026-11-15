@@ -126,6 +126,10 @@ struct PrepInput {
     // as several clips is rarely shot at one pace, and a clip walked through
     // slowly wants fewer frames than the one that ran past the same wall.
     float fps = 0.0f;
+    // The first seconds of THIS video to leave out, 0 = none. A GoPro tracker
+    // only starts writing its outlines once the person is small enough to
+    // track; the seconds -> frames conversion happens where the rate is known.
+    float start = 0.0f;
     // The photos were taken one after another and named in that order, so the
     // reconstruction may trust neighbouring files first (a video's frames
     // always are; SfmRunner::build_sequences).
@@ -252,6 +256,8 @@ struct PrepJob {
     // rate above becomes the average and stays within `adaptive_range` of it.
     bool  adaptive_fps = false;
     float adaptive_range = 4.0f;
+    bool  gps_spacing = false;
+    float gps_spacing_m = 5.0f;
     int   sharp_window = 3;          // keep the sharpest of N (1 = off)
     // Every track of a multi-lens file keeps the same instants (one sharpness
     // window over all of them), so every frame is a rig frame. Built-in decoder only.
@@ -308,7 +314,38 @@ struct PrepJob {
     std::string mask_model_path;
     std::string mask_detector_path;
     float mask_detector_threshold = 0.3f;   // sam::MaskOptions::detector_threshold
+
+    // ---- the view gate, for a capture split into several views ----
+    //
+    // Search only the views a tracked cone can reach; every `mask_scan_every`th
+    // EXTRACTED frame search them all, which is what finds a newcomer. 1 = off.
+    bool gopro_tracking = false;
+    std::string gopro_renderer, gopro_cache_folder;
+    int  mask_scan_every = 1;
+    // How close two people's cones may be and still count as one person, as a
+    // cosine (0.98 is about 11 degrees). float because json_field has no
+    // double overload, and a cosine of a unit vector does not want one.
+    float mask_merge_cos = 0.98f;
+    // Every Nth pixel of a detection becomes a ray. A person's cone is its
+    // shape, not its area, so this only trades precision for memory.
+    int  mask_ray_stride = 6;
 };
+
+// Which view each file is, and which instant every view of one moment shares,
+// so a gate can decide all ten views of a frame against the same tracks.
+struct ViewInstants {
+    // False unless the folders on disk ARE the plan's views, and every file's
+    // name carries the number the views agree on. A rotation the plan does not
+    // describe would gate the wrong views, so this is the gate's own guard.
+    bool ok = false;
+    std::vector<int> view;         // per file, -1 when it is in no view
+    std::vector<int64_t> instant;  // per file, the frame number its views share
+    std::vector<size_t> order;     // files by (instant, view)
+};
+
+ViewInstants group_views_by_instant(const std::vector<std::string>& cameras,
+                                    const std::vector<app::Pano360View>& views,
+                                    const std::vector<std::string>& stems);
 
 // The rate a row is actually extracted at (0 = every frame). A row's 0 means
 // "the same as the row above", as the lens column spells a decision made once
@@ -425,6 +462,8 @@ inline ReconStamp frames_stamp(const PrepJob& job) {
     st.args = {"--fps",         num(job.video_fps),
                "--adaptive",    job.adaptive_fps ? "1" : "0",
                "--range",       num(job.adaptive_range),
+               "--gps-spacing", job.gps_spacing ? "1" : "0",
+               "--gps-distance", num(job.gps_spacing_m),
                "--sharp",       num(job.sharp_window),
                "--sync",        job.sync_tracks ? "1" : "0",
                "--max-frames",  num(job.max_frames),
@@ -432,6 +471,7 @@ inline ReconStamp frames_stamp(const PrepJob& job) {
                "--photos",      num((int)job.photo_import),
                "--360",         num((int)job.pano.mode),
                "--360-size",    num(job.pano.size),
+               "--360-sharpen", num(job.pano.sharpen),
                "--360-orient",  num(job.pano.yaw) + "," + num(job.pano.pitch) +
                                     "," + num(job.pano.roll)};
     for (const PrepInput& in : job.inputs) {
@@ -439,6 +479,7 @@ inline ReconStamp frames_stamp(const PrepJob& job) {
         st.args.push_back(in.path);
         st.args.push_back(in.subdir);
         st.args.push_back(num(in.fps));
+        st.args.push_back(num(in.start));
     }
     return st;
 }

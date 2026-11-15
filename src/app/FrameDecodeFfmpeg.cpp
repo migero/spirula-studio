@@ -145,7 +145,7 @@ bool measure_motion_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& si
             return false;
         }
         ++index;
-        if (index % stride != 0) continue;
+        if (index < o.start_frame || index % stride != 0) continue;
         luma_box(luma.data(), lw, lh, mo.width, mo.height, gray.data());
         tracker.track(gray.data(), index);
         ++t.analyzed;
@@ -184,8 +184,16 @@ bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& s
     const bool filtered = plan.empty();
     std::string select;
     if (filtered) {
-        char b[96];
-        if (keep == 0) std::snprintf(b, sizeof b, "select='not(mod(n,%d))'", o.skip);
+        char b[112];
+        if (o.start_frame > 0 && keep == 0)
+            std::snprintf(b, sizeof b, "select='gte(n,%lld)*not(mod(n,%d))'",
+                          (long long)o.start_frame, o.skip);
+        else if (o.start_frame > 0)
+            std::snprintf(b, sizeof b,
+                          "select='gte(n,%lld)*lt(mod(n+%d,%d),%d)'",
+                          (long long)o.start_frame, keep, o.skip, keep);
+        else if (keep == 0)
+            std::snprintf(b, sizeof b, "select='not(mod(n,%d))'", o.skip);
         else
             std::snprintf(b, sizeof b, "select='lt(mod(n+%d,%d),%d)'", keep, o.skip,
                           keep);
@@ -204,7 +212,7 @@ bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& s
 
     // Only the best instant of the window is held: the window's argmax, as the
     // built-in decoder takes it, without keeping `keep` pictures a track.
-    SelectClock clock{o.keep, o.skip, plan, 0};
+    SelectClock clock{o.keep, o.skip, plan, 0, o.start_frame};
     std::vector<nn::Image> cur(n), best(n);
     std::vector<double> score(n), score_ms(n);
     std::vector<std::string> errs(n);

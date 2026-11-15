@@ -3340,11 +3340,62 @@ SS_MSG(sensor_disagree,
     RU("Модель {0}: масштаб по акселерометру {1} и по GPS {2} расходятся; остаётся более надёжный"),
     TR("Model {0}: ivmeölçer ölçeği {1} ile GPS ölçeği {2} uyuşmuyor; daha kesin olan tutuluyor"));
 
+SS_MSG(sun_north,
+    EN("Model {0}: north from the stored sun -- turned {1} deg; its elevation is {2} deg from "
+       "the ephemeris's over {3} frames"),
+    JA("モデル {0}: 保存された太陽から北を求めました。{1} 度回転し、太陽の高度は {2} 度"
+       "(天文値との差、{3} フレーム)"),
+    ZH_HANS("模型 {0}: 由保存的太阳确定北方; 旋转 {1} 度, 太阳高度与天文值相差 {2} 度"
+            "({3} 帧)"),
+    ZH_HANT("模型 {0}: 由儲存的太陽確定北方; 旋轉 {1} 度, 太陽高度與天文值相差 {2} 度"
+            "({3} 幀)"),
+    KO("모델 {0}: 저장된 태양에서 북쪽을 구했습니다. {1} 도 회전, 태양 고도는 천문값과 {2} 도 "
+       "차이({3} 프레임)"),
+    DE("Modell {0}: Norden aus der gespeicherten Sonne -- um {1} Grad gedreht; ihre Höhe "
+       "weicht {2} Grad vom Ephemeridenwert ab, über {3} Frames"),
+    FR("Modèle {0} : nord tiré du soleil enregistré -- rotation de {1} degrés ; son élévation "
+       "diffère de {2} degrés de l'éphéméride sur {3} images"),
+    ES("Modelo {0}: norte a partir del sol guardado -- giro de {1} grados; su elevación difiere "
+       "{2} grados de la efeméride en {3} fotogramas"),
+    PT("Modelo {0}: norte a partir do sol guardado -- rotação de {1} graus; a sua elevação "
+       "difere {2} graus da efeméride em {3} imagens"),
+    IT("Modello {0}: nord dal sole salvato -- ruotato di {1} gradi; la sua elevazione differisce "
+       "di {2} gradi dall'effemeride su {3} fotogrammi"),
+    NL("Model {0}: noord uit de opgeslagen zon -- {1} graden gedraaid; de hoogte wijkt {2} "
+       "graden af van de efemeride over {3} frames"),
+    RU("Модель {0}: север по сохранённому солнцу -- поворот {1} градусов; высота солнца "
+       "отличается на {2} градуса от эфемериды по {3} кадрам"),
+    TR("Model {0}: kayıtlı güneşten kuzey -- {1} derece döndürüldü; yüksekliği efemeristen {2} "
+       "derece farklı, {3} kare üzerinden"));
+
+SS_MSG(sun_declined,
+    EN("Model {0}: the stored sun is {1} deg off the ephemeris's elevation over {2} frames; "
+       "heading left as it was"),
+    JA("モデル {0}: 保存された太陽の高度は天文値と {1} 度ずれています ({2} フレーム)。方位は"
+       "そのまま"),
+    ZH_HANS("模型 {0}: 保存的太阳高度与天文值相差 {1} 度 ({2} 帧); 方位保持不变"),
+    ZH_HANT("模型 {0}: 儲存的太陽高度與天文值相差 {1} 度 ({2} 幀); 方位保持不變"),
+    KO("모델 {0}: 저장된 태양 고도가 천문값과 {1} 도 차이({2} 프레임). 방위는 그대로 둡니다"),
+    DE("Modell {0}: die gespeicherte Sonne weicht {1} Grad von der Ephemeridenhöhe ab, über {2} "
+       "Frames; die Ausrichtung bleibt"),
+    FR("Modèle {0} : le soleil enregistré s'écarte de {1} degrés de l'éphéméride sur {2} images ; "
+       "l'orientation reste"),
+    ES("Modelo {0}: el sol guardado difiere {1} grados de la efeméride en {2} fotogramas; la "
+       "orientación se deja como está"),
+    PT("Modelo {0}: o sol guardado difere {1} graus da efeméride em {2} imagens; a orientação "
+       "fica como está"),
+    IT("Modello {0}: il sole salvato differisce di {1} gradi dall'effemeride su {2} fotogrammi; "
+       "l'orientamento resta com'è"),
+    NL("Model {0}: de opgeslagen zon wijkt {1} graden af van de efemeride over {2} frames; de "
+       "richting blijft"),
+    RU("Модель {0}: сохранённое солнце отличается на {1} градуса от эфемериды по {2} кадрам; "
+       "ориентация прежняя"),
+    TR("Model {0}: kayıtlı güneş efemeristen {1} derece sapıyor, {2} kare üzerinden; yön "
+       "değişmiyor"));
+
 SS_MSG(sensor_src_imu,
     EN("the IMU"), JA("IMU"), ZH_HANS("IMU"), ZH_HANT("IMU"), KO("IMU"), DE("der IMU"),
-    FR("l'IMU"), ES("la IMU"), PT("a IMU"), IT("l'IMU"), NL("de IMU"), RU("IMU"), TR("IMU"));
-
-SS_MSG(sensor_src_gps,
+    FR("l'IMU"), ES("la IMU"), PT("a IMU"), IT("l'IMU"), NL("de IMU"), RU("IMU"), TR("IMU"));SS_MSG(sensor_src_gps,
     EN("the GPS log"), JA("GPS ログ"), ZH_HANS("GPS 记录"), ZH_HANT("GPS 記錄"), KO("GPS 로그"),
     DE("dem GPS-Log"), FR("le journal GPS"), ES("el registro GPS"), PT("o registo GPS"),
     IT("il log GPS"), NL("de GPS-log"), RU("журнала GPS"), TR("GPS kaydı"));

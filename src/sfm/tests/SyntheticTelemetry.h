@@ -33,6 +33,10 @@ struct Scenario {
     // frame instead of a raw gyro: the DJI Osmo 360.
     bool attitude_only = false;
     double accel_rate = 0;   // 0 keeps the 1 kHz the gyro is written at
+    // A per-frame fused gravity direction (GoPro's GRAV): the camera's own
+    // horizon, which the specific force only approximates while moving.
+    bool fused_gravity = false;
+    double gps_scale = 1.0;  // multiplies the true positions: a scale disagreement
     unsigned seed = 7;
 };
 
@@ -95,6 +99,12 @@ inline Telemetry synthesize(const Scenario& sc, const Mat3& R_ci) {
         }
         if (sc.accel_rate > 0 && std::fmod(ti + 0.5, adt) >= dt) continue;
         t.accel.push_back({tv, am.x, am.y, am.z});
+        if (sc.fused_gravity && std::fmod(ti + 0.5, 1.0 / 24) < dt) {
+            const Vec3 u = mul(transpose(R_wi), Vec3{0, 0, 1}) +
+                           Vec3{N(rng), N(rng), N(rng)} * (0.002 * 1.0 / std::sqrt(1.0 / 24));
+            const double n = u.norm();
+            t.gravity.push_back({tv, u.x / n, u.y / n, u.z / n});
+        }
     }
     if (sc.gps) {
         const double lat0 = 43.66, lon0 = -79.39;
@@ -104,6 +114,8 @@ inline Telemetry synthesize(const Scenario& sc, const Mat3& R_ci) {
             Vec3 p;
             const double tf = sc.stale_gps ? 0.0 : std::floor(ti);   // 1 Hz updates
             poseAt(sc, tf, R, p);
+            p.x *= sc.gps_scale;
+            p.y *= sc.gps_scale;
             std::mt19937 rj((unsigned)(tf * 1000) + sc.seed);
             const double e = p.x + 1.0 * N(rj), n = p.y + 1.0 * N(rj), u = p.z + 3.0 * N(rj);
             TelemetryGps g;

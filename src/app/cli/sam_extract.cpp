@@ -13,6 +13,7 @@
 #include "app/Tools.h"
 #include "i18n/catalog/Cli.h"
 #include "i18n/catalog/Data.h"
+#include "i18n/catalog/Dataset.h"
 #include "i18n/catalog/SamHelp.h"
 #include "nn/core/Log.h"
 #include "birefnet/BiRefNet.h"
@@ -68,6 +69,7 @@ void usage() {
     std::fprintf(stderr, "%s\n", H::xh_frame_selection.get());
     help_row("-o, --out <dir>", H::xh_out);
     help_row("-s, --skip <n>", H::xh_skip);
+    help_row("    --start <sec>", H::xh_start);
     help_row("-k, --keep <n>", H::xh_keep);
     help_row("-n, --max-frames <n>", H::xh_max_frames);
     help_row("-q, --quality <0..100>", H::xh_quality);
@@ -78,6 +80,7 @@ void usage() {
     help_row("    --sync", H::xh_sync);
     help_row("    --adaptive", H::xh_adaptive);
     help_row("    --adaptive-range <f>", H::xh_adaptive_range);
+    help_row("    --gps-distance <m>", spirula::i18n::msg::dataset::gps_spacing_distance);
     help_row("    --threads <n>", H::xh_threads);
     help_row("    --decoder <d>", H::xh_decoder);
     help_row("    --ffmpeg <exe>", H::xh_ffmpeg);
@@ -85,6 +88,7 @@ void usage() {
     std::fprintf(stderr, "\n%s\n", H::xh_360_section.get());
     help_row("    --360 <mode>", H::xh_360);
     help_row("    --360-size <n>", H::xh_360_size);
+    help_row("    --360-sharpen <0-100>", H::xh_360_sharpen);
     help_row("    --360-orient <y,p,r>", H::xh_360_orient);
 
     std::fprintf(stderr, "\n%s\n", H::xh_masking.get());
@@ -115,6 +119,8 @@ struct Options {
     std::string input;
     std::string out_dir, mask_dir;
     int    skip = 1, keep = -1, max_frames = 0;
+    float  start = 0.0f;
+    bool   start_requested = false;
     int    quality = 95, rotate = 0;
     bool   auto_rotate = true;
     float  scale = 1.0f;
@@ -122,6 +128,7 @@ struct Options {
     bool   sync = false;
     bool   adaptive = false;
     float  adaptive_range = 4.0f;
+    double gps_distance = 0;
     int    threads = 0;
     app::FrameDecoder decoder = app::FrameDecoder::Auto;
     std::string ffmpeg = "ffmpeg";
@@ -155,6 +162,10 @@ bool parse_args(int argc, char** argv, Options& o) {
         };
         if (a == "-o" || a == "--out") o.out_dir = next("--out");
         else if (a == "-s" || a == "--skip") o.skip = std::atoi(next("--skip"));
+        else if (a == "--start") {
+            o.start = std::strtof(next("--start"), nullptr);
+            o.start_requested = true;
+        }
         else if (a == "-k" || a == "--keep") o.keep = std::atoi(next("--keep"));
         else if (a == "-n" || a == "--max-frames") o.max_frames = std::atoi(next("--max-frames"));
         else if (a == "-q" || a == "--quality") o.quality = std::atoi(next("--quality"));
@@ -167,6 +178,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--adaptive") o.adaptive = true;
         else if (a == "--adaptive-range")
             o.adaptive_range = std::strtof(next("--adaptive-range"), nullptr);
+        else if (a == "--gps-distance")
+            o.gps_distance = std::strtod(next("--gps-distance"), nullptr);
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--decoder") {
             const std::string d = next("--decoder");
@@ -184,6 +197,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--ffmpeg") o.ffmpeg = next("--ffmpeg");
         else if (a == "--360") o.pano_mode = next("--360");
         else if (a == "--360-size") o.pano.size = std::atoi(next("--360-size"));
+        else if (a == "--360-sharpen")
+            o.pano.sharpen = std::atoi(next("--360-sharpen"));
         else if (a == "--360-orient") {
             const char* v = next("--360-orient");
             if (std::sscanf(v, "%f,%f,%f", &o.pano.yaw, &o.pano.pitch,
@@ -240,6 +255,11 @@ bool parse_args(int argc, char** argv, Options& o) {
                      spirula::i18n::msg::cli::sam_rotate_multiple_of_90.get());
         return false;
     }
+    if (o.start_requested && o.start < 0.0f) {
+        std::fprintf(stderr, "%s\n",
+                     spirula::i18n::msg::cli::sam_start_negative.get());
+        return false;
+    }
     return true;
 }
 
@@ -283,10 +303,24 @@ int sam_cli_extract(int argc, char** argv) {
     job.sync_tracks = o.sync;
     job.adaptive = o.adaptive;
     job.adaptive_range = o.adaptive_range;
+    job.gps_spacing_m = o.gps_distance;
     job.threads = o.threads;
     job.decoder = o.decoder;
     job.ffmpeg_exe = o.ffmpeg;
     job.write_overlay = o.overlay;
+    // Seconds -> source frames, the same conversion DatasetPrep.cpp makes.
+    if (o.start_requested && o.start > 0.0f) {
+        app::VideoFacts facts;
+        const std::atomic<bool> never{false};
+        if (!app::ffmpeg_probe_video(o.ffmpeg, o.input, facts, never) ||
+            !(facts.fps > 1.0)) {
+            std::fprintf(stderr, "%s\n",
+                         spirula::i18n::format(
+                             spirula::i18n::msg::cli::sam_start_no_fps, {}).c_str());
+            return 2;
+        }
+        job.start_frame = (int64_t)(o.start * facts.fps);
+    }
     // A 360 file is recognised by its packing, not by its name, and only then
     // is there anything for --360 to select.
     if (o.pano_mode != "off") {
@@ -310,8 +344,11 @@ int sam_cli_extract(int argc, char** argv) {
             app::pano360_detect(2, tracks[0].first, tracks[0].second, meta,
                                 job.eac)) {
             o.pano.mode = o.pano_mode == "equirect" ? app::Pano360Mode::Equirect
-                                                    : app::Pano360Mode::Faces;
+                        : o.pano_mode == "corners" ? app::Pano360Mode::Corners
+                        : o.pano_mode == "fisheye" ? app::Pano360Mode::Fisheye
+                                                   : app::Pano360Mode::Faces;
             job.views = app::pano360_views(job.eac, o.pano);
+            job.pano_sharpen = o.pano.sharpen;
             std::fprintf(stderr, "360: %d x %d tracks -> %zu view(s) of %dx%d\n",
                          job.eac.track_w, job.eac.track_h, job.views.size(),
                          job.views[0].width, job.views[0].height);

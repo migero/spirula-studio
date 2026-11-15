@@ -12,6 +12,7 @@
 // decoder ran.
 
 #include "app/FrameLook.h"
+#include "app/FrameGps.h"
 #include "app/FrameMotion.h"
 #include "nn/io/Image.h"
 #include "sam/Masking.h"
@@ -58,10 +59,16 @@ struct FrameExtractJob : FrameLook {
     // within `adaptive_range` of it. Costs one extra pass over the first track.
     bool  adaptive = false;
     float adaptive_range = 4.0f;
+    // 0 disables metadata spacing; otherwise GPS path length decides intervals.
+    double gps_spacing_m = 0;
     // The spacing to keep, when the caller has already worked it out: several
     // videos on one rate share a budget, and that plan cannot be made from one
     // of them. Empty lets the run measure and plan its own.
     std::vector<int64_t> plan;
+    // The first source frame the selection may write; everything earlier is
+    // not a candidate. 0 = from the start. Converting seconds to a frame is
+    // the caller's, who alone knows the file's rate.
+    int64_t start_frame = 0;
 
     // Masking. Empty model = no masks.
     sam::MaskOptions mask;

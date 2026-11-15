@@ -64,16 +64,18 @@ public:
     // False with `error` when the file carries nothing this can answer with.
     bool init(const Telemetry& t, const TelemetryCheck& c, std::string& error) {
         using namespace timeline_detail;
-        _gyro.clear(); _accel.clear(); _att.clear();
+        _gyro.clear(); _accel.clear(); _att.clear(); _grav.clear();
         _q_plus.clear(); _q_minus.clear(); _gps.clear();
         _P = mat3Identity();
         _gyro_rate = c.gyro.rate_hz;
         _accel_rate = c.accel.rate_hz;
         for (const TelemetryVec& v : t.gyro) _gyro.push_back({v.t, {v.x, v.y, v.z}});
         for (const TelemetryVec& v : t.accel) _accel.push_back({v.t, {v.x, v.y, v.z}});
+        for (const TelemetryVec& v : t.gravity) _grav.push_back({v.t, {v.x, v.y, v.z}});
         auto by_t = [](const Stamped& a, const Stamped& b) { return a.t < b.t; };
         std::stable_sort(_gyro.begin(), _gyro.end(), by_t);
         std::stable_sort(_accel.begin(), _accel.end(), by_t);
+        std::stable_sort(_grav.begin(), _grav.end(), by_t);
 
         if (t.orientation_axes.size() == 3) {
             _P = {0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -111,8 +113,8 @@ public:
                 _gps.push_back(g);
         _gps_usable = c.gps_usable && _gps.size() >= 5;
 
-        if (!hasRotation() && _accel.empty() && _gps.empty()) {
-            error = "no gyro, attitude, accelerometer or GPS";
+        if (!hasRotation() && _accel.empty() && _grav.empty() && _gps.empty()) {
+            error = "no gyro, attitude, gravity, accelerometer or GPS";
             return false;
         }
         return true;
@@ -120,7 +122,7 @@ public:
 
     bool hasRotation() const { return _use_gyro || _use_att; }
     bool hasGyro() const { return _use_gyro; }
-    bool hasUp() const { return !_accel.empty(); }
+    bool hasUp() const { return !_accel.empty() || !_grav.empty(); }
     // 20 Hz admits a camera writing one accelerometer reading per frame (the
     // DJI's 30 Hz); the position integral over a 0.1-1 s pair still has
     // samples to work with, and the fit's own sigma says when it does not.
@@ -149,6 +151,24 @@ public:
     UpVote upAt(double t, double half_window = 0.25, double sign = 1.0) const {
         UpVote v;
         const double ti = t + time_offset;
+        if (!_grav.empty()) {
+            // The camera's own fused gravity, already a direction: no
+            // specific-force contamination from walking or a vehicle.
+            auto it = std::lower_bound(_grav.begin(), _grav.end(), ti,
+                                       [](const Stamped& s, double x) { return s.t < x; });
+            if (it != _grav.begin()) {
+                const auto prev = it - 1;
+                if (it == _grav.end() || std::fabs(prev->t - ti) <= std::fabs(it->t - ti))
+                    it = prev;
+            }
+            if (it == _grav.end() || std::fabs(it->t - ti) > 0.2) return v;
+            const double n = it->v.norm();
+            if (!(n > 1e-9)) return v;
+            v.up = it->v * (1.0 / n);
+            v.ok = true;
+            v.samples = 1;
+            return v;
+        }
         if (_use_att && _accel_rate < 50) {
             Quat q;
             if (!attitudeAt(ti, q)) return v;
@@ -241,7 +261,7 @@ private:
         double t;
         Quat q;
     };
-    std::vector<Stamped> _gyro, _accel;
+    std::vector<Stamped> _gyro, _accel, _grav;
     std::vector<StampedQuat> _att;
     mutable std::vector<Quat> _q_plus, _q_minus;   // cumulative gyro orientation per sample
     std::vector<TelemetryGps> _gps;

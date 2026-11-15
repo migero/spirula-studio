@@ -577,7 +577,8 @@ inline size_t countObservations(const Reconstruction& rec) {
 // parallax -- Mapper::filterPoints, against a standalone model.
 // `max_err` is in extraction pixels (Camera::pixel_scale, D47).
 inline void filterModel(Reconstruction& rec, double max_err, double min_ang_deg,
-                        size_t& removed_obs, size_t& removed_pts) {
+                        size_t& removed_obs, size_t& removed_pts,
+                        const RigTable* rigs = nullptr) {
     removed_obs = removed_pts = 0;
     std::map<uint32_t, Vec3> centers;
     for (const auto& kv : rec.images)
@@ -608,10 +609,11 @@ inline void filterModel(Reconstruction& rec, double max_err, double min_ang_deg,
         pt.track = keep;
         bool degenerate = pt.track.size() < 2;
         if (!degenerate) {
-            double best = 0;
+            double best = -1;  // no eligible baseline yet, even when min_ang is zero
             for (size_t i = 0; i + 1 < pt.track.size() && best < min_ang; i++)
                 for (size_t j = i + 1; j < pt.track.size() && best < min_ang; j++)
-                    best = std::max(best, triangulationAngle(pt.xyz, centers[pt.track[i].image_id],
+                    if (!rigs || rigs->depthPair(pt.track[i].image_id, pt.track[j].image_id))
+                        best = std::max(best, triangulationAngle(pt.xyz, centers[pt.track[i].image_id],
                                                              centers[pt.track[j].image_id]));
             degenerate = best < min_ang;
         }
@@ -1036,7 +1038,7 @@ inline MergeCounts mergeInto(Reconstruction& dst, const Reconstruction& src, con
     }
 
     filterModel(dst, opt.filter_reproj_error, opt.min_tri_angle_deg, c.obs_filtered,
-                c.points_filtered);
+                c.points_filtered, opt.rigs);
     for (uint32_t id : added)
         if ((int)dst.images.at(id).numPoint3D() < opt.min_image_points &&
             !rigCovered(dst, opt.rigs, id, opt.min_image_points))

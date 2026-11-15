@@ -105,7 +105,7 @@ int select_sharpest_frames(const std::string& cand_dir,
     if (files.empty()) return -1;
 
     int group = std::max(options.group, 1);
-    if (!options.adaptive && options.max_frames > 0)
+    if (!options.adaptive && options.gps_spacing_m <= 0 && options.max_frames > 0)
         group = std::max<int>(
             group, (int)((files.size() + options.max_frames - 1) / options.max_frames));
 
@@ -207,7 +207,31 @@ int select_sharpest_frames(const std::string& cand_dir,
         taken[first[best]] = true;
         keep.push_back(best);
     };
-    if (tracker) {
+    if (options.gps_spacing_m > 0) {
+        app::GpsPlanOptions go;
+        go.spacing_m = options.gps_spacing_m;
+        go.fps = options.gps_fps;
+        go.frames = (int64_t)files.size();
+        go.max_frames = options.max_frames;
+        go.time_offset_s = options.gps_time_offset_s;
+        app::GpsPlanResult gps;
+        std::string gps_error;
+        if (app::plan_by_gps(options.gps_input, go, gps,
+                        [&](int64_t at, int64_t of, float distance) {
+                            if (options.measured) options.measured(at, of, distance);
+                        },
+                        gps_error)) {
+            const int window = std::max(options.window, 1);
+            for (int64_t at : gps.ends) {
+                const size_t g1 = (size_t)at + 1;
+                take(g1 > (size_t)window ? g1 - (size_t)window : 0, g1);
+            }
+            if (options.planned) options.planned(gps.ends, (int64_t)files.size());
+        } else {
+            if (log) log(gps_error);
+            return -1;
+        }
+    } else if (tracker) {
         tracker->finish();
         const int window = std::max(options.window, 1);
         app::MotionPlanInput mi;

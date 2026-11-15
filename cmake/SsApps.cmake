@@ -69,6 +69,12 @@ list(APPEND SS_TOOL_SOURCES
      ${SS_SRC}/app/FrameMotion.cpp
      ${SS_SRC}/app/FrameSharpness.cpp
      ${SS_SRC}/app/Pano360.cpp
+     ${SS_SRC}/app/PersonRays.cpp
+     ${SS_SRC}/app/PersonStore.cpp
+     ${SS_SRC}/app/TrackingCropBridge.cpp
+     ${SS_SRC}/app/GoProBin.cpp
+     ${SS_SRC}/app/GoProMask.cpp
+     ${SS_SRC}/app/ScanIndex.cpp
      ${SS_SRC}/app/AppPaths.cpp
      ${SS_SRC}/app/CrashLog.cpp)
 if(WIN32)
@@ -118,6 +124,7 @@ if(SS_BUILD_SAM)
          ${SS_SRC}/app/cli/sam_main.cpp
          ${SS_SRC}/app/cli/sam_extract.cpp
          ${SS_SRC}/app/FrameExtract.cpp
+         ${SS_SRC}/app/FrameGps.cpp
          ${SS_SRC}/app/FrameDecodeFfmpeg.cpp
          ${SS_SRC}/app/FfmpegVideo.cpp
          ${SS_SRC}/app/gui/Subprocess.cpp)
@@ -327,7 +334,8 @@ if(SS_SEPARATE_TOOLS)
                      ${SS_SRC}/app/FrameMaskSvg.cpp
                      ${SS_SRC}/app/FrameLook.cpp ${SS_SRC}/app/FrameMotion.cpp
                      ${SS_SRC}/app/FrameSharpness.cpp ${SS_SRC}/app/Pano360.cpp
-                     ${SS_SRC}/app/cli/sam_extract.cpp ${SS_SRC}/app/FrameExtract.cpp
+                      ${SS_SRC}/app/cli/sam_extract.cpp ${SS_SRC}/app/FrameExtract.cpp
+                      ${SS_SRC}/app/FrameGps.cpp
                      ${SS_SRC}/app/FrameDecodeFfmpeg.cpp ${SS_SRC}/app/FfmpegVideo.cpp
                      ${SS_SRC}/app/gui/Subprocess.cpp)
         set(_sam_lib ss_sam)
@@ -364,6 +372,29 @@ add_executable(packed_lens_test
     ${SS_SRC}/app/tests/packed_lens_test.cpp
     ${SS_SRC}/app/Pano360.cpp)
 ss_configure_app(packed_lens_test)
+
+# Ray space: the pixel<->sphere pair every mask of a person reuses across the
+# ten views. No device, and the round trip is exact or it is silent.
+add_executable(pano360_rays_test
+    ${SS_SRC}/app/tests/pano360_rays_test.cpp
+    ${SS_SRC}/app/Pano360.cpp)
+ss_configure_app(pano360_rays_test)
+
+# A person as rays, and the merge and split that per-face masks cannot do.
+add_executable(person_rays_test
+    ${SS_SRC}/app/tests/person_rays_test.cpp
+    ${SS_SRC}/app/PersonRays.cpp
+    ${SS_SRC}/app/Pano360.cpp)
+ss_configure_app(person_rays_test)
+
+# Which views a frame searches, and what a resume knows about it.
+add_executable(person_gate_test
+    ${SS_SRC}/app/tests/person_gate_test.cpp
+    ${SS_SRC}/app/PersonStore.cpp
+    ${SS_SRC}/app/ScanIndex.cpp
+    ${SS_SRC}/app/PersonRays.cpp
+    ${SS_SRC}/app/Pano360.cpp)
+ss_configure_app(person_gate_test)
 
 # The stencil shapes, spelling and fill, with no GUI: FrameMask.cpp is compiled
 # into the CLI too, so this must link without imgui.
@@ -404,6 +435,27 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/gui/edit/ElementGrid.cpp
         ${SS_SRC}/app/gui/edit/Selection.cpp)
     ss_configure_app(attributes_test)
+
+    add_executable(sky_dome_doc_test
+        ${SS_SRC}/app/gui/tests/sky_dome_doc_test.cpp
+        ${SS_SRC}/app/gui/edit/EditDoc.cpp
+        ${SS_SRC}/app/gui/edit/PointsDoc.cpp
+        ${SS_SRC}/app/gui/edit/Selection.cpp)
+    ss_configure_app(sky_dome_doc_test)
+
+    add_executable(sky_dome_up_test
+        ${SS_SRC}/app/gui/tests/sky_dome_up_test.cpp
+        ${SS_SRC}/app/gui/edit/EditDoc.cpp
+        ${SS_SRC}/app/gui/edit/PointsDoc.cpp
+        ${SS_SRC}/app/gui/edit/Selection.cpp)
+    ss_configure_app(sky_dome_up_test)
+
+    add_executable(sky_dome_real_test
+        ${SS_SRC}/app/gui/tests/sky_dome_real_test.cpp
+        ${SS_SRC}/app/gui/edit/EditDoc.cpp
+        ${SS_SRC}/app/gui/edit/PointsDoc.cpp
+        ${SS_SRC}/app/gui/edit/Selection.cpp)
+    ss_configure_app(sky_dome_real_test)
 
     add_executable(rig_guess_test
         ${SS_SRC}/app/gui/tests/rig_guess_test.cpp
@@ -475,8 +527,52 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/gui/mask/MaskLayer.cpp
         ${SS_SRC}/app/FrameMask.cpp
         ${SS_SRC}/app/FrameMaskSvg.cpp
-        ${SS_SRC}/app/FrameLook.cpp
-        ${SS_SRC}/app/FrameMotion.cpp
-        ${SS_SRC}/app/Pano360.cpp)
+         ${SS_SRC}/app/FrameLook.cpp
+         ${SS_SRC}/app/FrameMotion.cpp
+         ${SS_SRC}/app/FrameGps.cpp
+         ${SS_SRC}/app/Pano360.cpp)
     ss_configure_app(dataset_prep_test)
+endif()
+
+if(SS_BUILD_SAM)
+    add_executable(tracking_crop_test EXCLUDE_FROM_ALL
+        ${SS_SRC}/app/tests/tracking_crop_test.cpp
+        ${SS_SRC}/app/TrackingCropBridge.cpp ${SS_SRC}/app/Pano360.cpp
+        ${SS_SRC}/app/AppPaths.cpp ${SS_SRC}/app/gui/Subprocess.cpp)
+    target_include_directories(tracking_crop_test PRIVATE ${SS_SRC})
+    target_link_libraries(tracking_crop_test PRIVATE ss_sam)
+    set_property(TARGET tracking_crop_test PROPERTY CXX_STANDARD 17)
+endif()
+
+# The .people.bin reader and its camera-frame raster, host-only; no SAM.
+add_executable(gopro_bin_test EXCLUDE_FROM_ALL
+    ${SS_SRC}/app/tests/gopro_bin_test.cpp
+    ${SS_SRC}/app/GoProBin.cpp
+    ${SS_SRC}/app/GoProMask.cpp
+    ${SS_SRC}/app/Pano360.cpp)
+ss_configure_app(gopro_bin_test)
+
+if(SS_BUILD_SAM AND SS_ENABLE_PATENTED AND TARGET dataset_prep_test)
+    get_target_property(_prep_sources dataset_prep_test SOURCES)
+    list(REMOVE_ITEM _prep_sources ${SS_SRC}/app/gui/tests/dataset_prep_test.cpp)
+    list(APPEND _prep_sources
+        ${SS_SRC}/app/GoProBin.cpp
+        ${SS_SRC}/app/GoProMask.cpp)
+    add_executable(tracking_prep_test EXCLUDE_FROM_ALL ${_prep_sources}
+        ${SS_SRC}/app/tests/tracking_prep_test.cpp ${SS_SRC}/app/TrackingCropBridge.cpp
+        ${SS_SRC}/app/DepthPng.cpp ${SS_SRC}/app/gui/FilmReel.cpp ${SS_SRC}/app/gui/Picture.cpp
+        ${SS_SRC}/app/AppPaths.cpp ${SS_SRC}/app/PersonRays.cpp
+        ${SS_SRC}/app/PersonStore.cpp ${SS_SRC}/app/ScanIndex.cpp
+        ${SS_SRC}/app/FrameExtract.cpp ${SS_SRC}/app/FrameDecodeFfmpeg.cpp
+        ${SS_SRC}/app/FrameDecodeVulkan.cpp)
+    ss_configure_app(tracking_prep_test)
+    target_compile_definitions(tracking_prep_test PRIVATE SS_BUILD_SAM=1 SS_TOOL_SFM=1)
+    target_link_libraries(tracking_prep_test PRIVATE ss_sam ss_sfm ss_video imgui_glfw)
+    if(NOT MSVC)
+        target_compile_options(tracking_prep_test PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(tracking_prep_test PRIVATE -Wl,--gc-sections)
+    else()
+        target_compile_options(tracking_prep_test PRIVATE /Gy)
+        target_link_options(tracking_prep_test PRIVATE /OPT:REF)
+    endif()
 endif()

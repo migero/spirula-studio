@@ -645,6 +645,10 @@ void GuiApp::write_run_settings(std::ofstream& f) {
     line("masking_enabled", cfg_str(_mask_enable));
     line("mask_features", cfg_str(_mask_features));
     line("mask_detect_every", std::to_string(_mask_detect_every));
+    line("mask_scan_every", std::to_string(_mask_scan_every));
+    line("gopro_tracking", cfg_str(_sfm_job.prep.gopro_tracking));
+    line("gopro_renderer", _sfm_job.prep.gopro_renderer);
+    line("gopro_cache_folder", _sfm_job.prep.gopro_cache_folder);
 
     section(i18n::format(msg::runlog_section_recon, {"SfM"}));
     const SfmJob& j = _sfm_job;
@@ -668,6 +672,7 @@ void GuiApp::write_run_settings(std::ofstream& f) {
     line("max_features", std::to_string(j.max_features));
     line("max_image_size", std::to_string(j.max_image_size));
     line("metric_gps", std::to_string(j.metric_gps));
+    line("metric_max_error", std::to_string(j.gps_max_error));
     line("sensor_gauge", std::to_string(j.sensor_gauge));
     line("exif_attitude", std::to_string(j.exif_attitude));
     line("keep_intermediate", cfg_str(j.keep_intermediate));
@@ -677,6 +682,8 @@ void GuiApp::write_run_settings(std::ofstream& f) {
     line("video_fps", cfg_str(j.prep.video_fps));
     line("adaptive_fps", cfg_str(j.prep.adaptive_fps));
     if (j.prep.adaptive_fps) line("adaptive_range", cfg_str(j.prep.adaptive_range));
+    line("gps_spacing", cfg_str(j.prep.gps_spacing));
+    if (j.prep.gps_spacing) line("gps_spacing_m", cfg_str(j.prep.gps_spacing_m));
     for (const PrepInput& s : _sources)
         if (s.is_video && s.fps != 0.0f)
             line("video_fps:" + (s.subdir.empty() ? s.path : s.subdir),
@@ -907,6 +914,9 @@ DatasetSettings GuiApp::capture_dataset_settings() const {
     s.sfm.prep.mask_memory = _mask_memory;
     s.sfm.prep.mask_detect_every = _mask_detect_every;
     s.sfm.prep.mask_memory_frames = _mask_memory_frames;
+    s.sfm.prep.mask_scan_every = _mask_scan_every;
+    s.sfm.prep.mask_ray_stride = _mask_ray_stride;
+    s.sfm.prep.mask_merge_cos = _mask_merge_cos;
     s.sfm.mask_features = _mask_features;
     s.sfm.geometry = _geometry;
     return s;
@@ -940,6 +950,9 @@ void GuiApp::apply_dataset_settings(const DatasetSettings& in) {
     _mask_memory = s.sfm.prep.mask_memory;
     _mask_detect_every = s.sfm.prep.mask_detect_every;
     _mask_memory_frames = s.sfm.prep.mask_memory_frames;
+    _mask_scan_every = s.sfm.prep.mask_scan_every;
+    _mask_ray_stride = s.sfm.prep.mask_ray_stride;
+    _mask_merge_cos = s.sfm.prep.mask_merge_cos;
     _mask_features = s.sfm.mask_features;
     _geometry = s.sfm.geometry;
     // A colour space the preset spelled out is a decision, so the EXR probe
@@ -1154,6 +1167,168 @@ void GuiApp::request_open_dataset(std::string dir) {
     open_dataset(dir);
 }
 
+// Handing the open dataset back to the screen that can rebuild it. The path a
+// trainer run holds may be the image folder itself, which is the dataset one
+// level up -- the same fold launch_training() applies.
+void GuiApp::open_dataset_screen(std::string dir) {
+    if (dir.empty() || native_work_busy()) return;
+    if (fs::path(dir).filename() == "images")
+        dir = fs::path(dir).parent_path().string();
+    detach_session_views();
+    close_splat();
+    // A reconstruction brings up a Vulkan device of its own and wants the VRAM
+    // the training run is still holding.
+    _runner.release_engine();
+    add_existing_dataset(dir);
+    // Arriving here is asking to rebuild: the screen says so in its own colour
+    // and the model is replaced only when the run below replaces it.
+    _redo_model = true;
+    reset_dataset_preview();
+    _screen = Screen::NewDataset;
+}
+
+// The New Dataset screen, pointed back at what the dataset's own frames stamp
+// records: the fields frames_stamp() compares on, so restoring them makes the
+// next run's stamp match and the resume rules keep the frames and masks.
+void GuiApp::reopen_dataset(std::string dir) {
+    if (dir.empty() || native_work_busy()) return;
+    if (fs::path(dir).filename() == "images")
+        dir = fs::path(dir).parent_path().string();
+    const ReconStamp st = read_recon_stamp(dir, kFramesStampFile);
+    if (!st.present) {
+        open_dataset_screen(dir);
+        return;
+    }
+
+    struct Row { std::string path; float fps = 0, start = 0; };
+    std::vector<Row> rows;
+    PrepJob prep;
+    for (size_t i = 0; i < st.args.size();) {
+        const std::string& k = st.args[i++];
+        auto one = [&]() {
+            return i < st.args.size() ? st.args[i++] : "";
+        };
+        auto val = [](const std::string& s) {
+            return (float)std::strtod(s.c_str(), nullptr);
+        };
+        if (k == "--fps") prep.video_fps = val(one());
+        else if (k == "--adaptive") prep.adaptive_fps = one() == "1";
+        else if (k == "--range") prep.adaptive_range = val(one());
+        else if (k == "--gps-spacing") prep.gps_spacing = one() == "1";
+        else if (k == "--gps-distance") prep.gps_spacing_m = val(one());
+        else if (k == "--sharp") prep.sharp_window = (int)val(one());
+        else if (k == "--sync") prep.sync_tracks = one() == "1";
+        else if (k == "--max-frames") prep.max_frames = (int)val(one());
+        else if (k == "--rotate") prep.auto_rotate = one() == "1";
+        else if (k == "--photos") prep.photo_import = (PhotoImport)(int)val(one());
+        else if (k == "--360") prep.pano.mode = (app::Pano360Mode)(int)val(one());
+        else if (k == "--360-size") prep.pano.size = (int)val(one());
+        else if (k == "--360-sharpen") prep.pano.sharpen = (int)val(one());
+        else if (k == "--360-orient") {
+            // One comma-joined token: yaw,pitch,roll.
+            float y = 0, p = 0, r = 0;
+            std::sscanf(one().c_str(), "%g,%g,%g", &y, &p, &r);
+            prep.pano.yaw = y;
+            prep.pano.pitch = p;
+            prep.pano.roll = r;
+        } else if (k == "--input" && i + 3 < st.args.size()) {
+            Row r;
+            r.path = st.args[i++];
+            i++;                      // subdir; the probe picks its own
+            r.fps = val(st.args[i++]);
+            r.start = val(st.args[i++]);
+            rows.push_back(std::move(r));
+        }
+        // Unknown keys skip their own value the next loop reads; a stamp from
+        // a newer build must not have its --input rows misread by position.
+    }
+    if (rows.empty()) {
+        open_dataset_screen(dir);
+        return;
+    }
+
+    std::vector<std::string> paths;
+    for (const Row& r : rows) paths.push_back(r.path);
+    detach_session_views();
+    close_splat();
+    _runner.release_engine();
+    if (!add_sources(paths, /*replace=*/true)) return;
+    // The probe found the videos; the stamp says how they were extracted.
+    for (size_t i = 0; i < _sources.size() && i < rows.size(); i++) {
+        // By path, falling back to position -- rows and sources are both in
+        // input order, and a capture may have been moved since.
+        size_t at = i;
+        for (size_t j = 0; j < rows.size(); j++)
+            if (rows[j].path == _sources[i].path) { at = j; break; }
+        _sources[i].fps = rows[at].fps;
+        _sources[i].start = rows[at].start;
+    }
+    _sfm_job.prep.video_fps = prep.video_fps;
+    _sfm_job.prep.adaptive_fps = prep.adaptive_fps;
+    _sfm_job.prep.adaptive_range = prep.adaptive_range;
+    _sfm_job.prep.gps_spacing = prep.gps_spacing;
+    _sfm_job.prep.gps_spacing_m = prep.gps_spacing_m;
+    _sfm_job.prep.sharp_window = prep.sharp_window;
+    _sfm_job.prep.sync_tracks = prep.sync_tracks;
+    _sfm_job.prep.max_frames = prep.max_frames;
+    _sfm_job.prep.auto_rotate = prep.auto_rotate;
+    _sfm_job.prep.photo_import = prep.photo_import;
+    _sfm_job.prep.pano = prep.pano;
+
+    // The folder is the output, and a masks/ already in it is an answer the
+    // panel should show as on (resume keeps it either way).
+    _workspace = _workspace_auto = fs::absolute(dir).string();
+    _mask_enable = workspace_state().masks;
+
+    // Masking said what it did in its own stamp; a run before this one
+    // (no file, or not one of ours) leaves the panel as it is.
+    const ReconStamp ms = read_recon_stamp(dir, kMaskStampFile);
+    if (ms.present) {
+        std::string model;
+        for (size_t i = 0; i < ms.args.size();) {
+            const std::string& k = ms.args[i++];
+            auto one = [&]() {
+                return i < ms.args.size() ? ms.args[i++] : std::string();
+            };
+            if (k == "--enable") _mask_enable = one() == "1";
+            else if (k == "--for-features") _mask_features = one() == "1";
+            else if (k == "--keep") _mask.keep_subject = one() == "1";
+            else if (k == "--prompt") _mask.prompt = one();
+            else if (k == "--negative") _mask.negative_prompt = one();
+            else if (k == "--features") _mask.feature_prompt = one();
+            else if (k == "--model") model = one();
+            else if (k == "--gopro") _sfm_job.prep.gopro_tracking = one() == "1";
+            else if (k == "--gopro-renderer") _sfm_job.prep.gopro_renderer = one();
+            else if (k == "--gopro-cache")
+                _sfm_job.prep.gopro_cache_folder = one();
+        }
+        // An id a build no longer lists (an uninstalled model, a renamed one)
+        // would leave the picker empty; the panel keeps what it has instead.
+        if (!model.empty() && find_model(model)) _model_id = model;
+    }
+
+    _redo_model = true;
+    reset_dataset_preview();
+    _screen = Screen::NewDataset;
+}
+
+void GuiApp::request_dataset_screen() {
+    const bool loading = _runner.phase() == TrainRunner::Phase::Loading;
+    if (training_busy() || loading) {
+        _pending = Pending::GoDataset;
+        _pending_path = _cfg.data;
+        if (loading) {
+            _stop_confirmed = true;
+            _runner.request_stop();
+        } else {
+            _open_confirm = true;
+        }
+        return;
+    }
+    if (native_work_busy()) return;
+    open_dataset_screen(_cfg.data);
+}
+
 void GuiApp::request_go_home() {
     const bool loading = _runner.phase() == TrainRunner::Phase::Loading;
     if (training_busy() || loading) {
@@ -1353,6 +1528,7 @@ void GuiApp::run_pending_if_stopped() {
     switch (p) {
         case Pending::GoHome:     _screen = Screen::Home; break;
         case Pending::OpenDataset: open_dataset(_pending_path); break;
+        case Pending::GoDataset: open_dataset_screen(_pending_path); break;
         case Pending::OpenSplat:  open_splat(_pending_path); break;
         case Pending::Quit:       _quit = true; break;
         case Pending::StartBatch: start_batch(_pending_batch_skip); break;
@@ -2427,6 +2603,7 @@ void GuiApp::adopt_exr_color_space() {
 const char* GuiApp::dir_key(PickAction a, FileDialog::Mode m) {
     switch (a) {
         case PickAction::OpenDataset:
+        case PickAction::ReopenDataset:
         case PickAction::BatchDataset:
         case PickAction::SourceDataset:
         case PickAction::MeshPhotos:        return "dataset";
@@ -2493,6 +2670,9 @@ void GuiApp::handle_dialog_result(const std::vector<std::string>& paths) {
     switch (_pick) {
         case PickAction::OpenDataset:
             request_open_dataset(path);
+            break;
+        case PickAction::ReopenDataset:
+            reopen_dataset(path);
             break;
         case PickAction::SourceImages:
         case PickAction::SourceVideo:
@@ -3212,6 +3392,15 @@ void GuiApp::draw_home() {
     }
     ui::help_on_hover(msg::home_open_dataset_help);
 
+    ImGui::BeginDisabled(native_work_busy());
+    if (ui::Button(msg::home_reopen_dataset, ImVec2(-1, bh)) &&
+        !native_work_busy()) {
+        open_pick(PickAction::ReopenDataset, msg::home_reopen_dataset.get(),
+                  FileDialog::Mode::Folder);
+    }
+    ImGui::EndDisabled();
+    ui::help_on_hover(msg::home_reopen_dataset_help);
+
     // Photos and video are one screen and one input list: a capture can hold
     // both, so splitting the entry point in two only asked a question with no
     // right answer. The list is added to there, or dropped onto the window.
@@ -3354,7 +3543,7 @@ void GuiApp::request_model_download(const std::string& id, const std::string& de
 // download, not something the run can do anything about, so it is asked before
 // starting rather than reported twenty minutes in.
 bool GuiApp::mask_model_missing() const {
-    if (!_mask_enable) return false;
+    if (!_mask_enable || gopro_bin_masking()) return false;
     // Inputs that arrived with their own masks are never segmented, so a job
     // made only of those needs no model at all.
     bool all_bring_masks = !_sources.empty();
@@ -3362,6 +3551,11 @@ bool GuiApp::mask_model_missing() const {
         all_bring_masks = all_bring_masks && !s.mask_dir.empty();
     if (all_bring_masks) return false;
     return selected_mask_model().empty();
+}
+
+bool GuiApp::gopro_bin_masking() const {
+    return any_pano360(_sources) && effective_engine() == Engine::BuiltIn &&
+           _sfm_job.prep.gopro_tracking && _sfm_job.prep.gopro_renderer.empty();
 }
 
 const WorkspaceState& GuiApp::workspace_state() {
@@ -3382,6 +3576,9 @@ const WorkspaceState& GuiApp::workspace_state() {
 // copied across, so a field cannot be set on the screen and silently not run.
 void GuiApp::sync_dataset_jobs() {
     PrepJob prep;
+    prep.gopro_tracking = _sfm_job.prep.gopro_tracking;
+    prep.gopro_renderer = _sfm_job.prep.gopro_renderer;
+    prep.gopro_cache_folder = _sfm_job.prep.gopro_cache_folder;
     prep.inputs = _sources;
     // The checkbox decides whether the run is given the stencils; the drawings
     // stay on _sources either way, so switching it off does not lose them.
@@ -3392,6 +3589,8 @@ void GuiApp::sync_dataset_jobs() {
     prep.video_fps = _sfm_job.prep.video_fps;
     prep.adaptive_fps = _sfm_job.prep.adaptive_fps;
     prep.adaptive_range = _sfm_job.prep.adaptive_range;
+    prep.gps_spacing = _sfm_job.prep.gps_spacing;
+    prep.gps_spacing_m = _sfm_job.prep.gps_spacing_m;
     prep.sharp_window = _sfm_job.prep.sharp_window;
     prep.pano = _sfm_job.prep.pano;
     prep.max_frames = _sfm_job.prep.max_frames;
@@ -3414,6 +3613,9 @@ void GuiApp::sync_dataset_jobs() {
     prep.mask_memory = _mask_memory;
     prep.mask_detect_every = _mask_detect_every;
     prep.mask_memory_frames = _mask_memory_frames;
+    prep.mask_scan_every = _mask_scan_every;
+    prep.mask_ray_stride = _mask_ray_stride;
+    prep.mask_merge_cos = _mask_merge_cos;
     prep.mask_clicks = _mask.clicks;
     prep.mask_model_path = mask_model.model;
     prep.mask_detector_path = mask_model.detector;
@@ -3433,6 +3635,8 @@ void GuiApp::sync_dataset_jobs() {
     _colmap_job.video_fps = prep.video_fps;
     _colmap_job.adaptive_fps = prep.adaptive_fps;
     _colmap_job.adaptive_range = prep.adaptive_range;
+    _colmap_job.gps_spacing = prep.gps_spacing;
+    _colmap_job.gps_spacing_m = prep.gps_spacing_m;
     _colmap_job.sharp_window = prep.sharp_window;
     _colmap_job.pano = prep.pano;
     _colmap_job.max_frames = prep.max_frames;
@@ -3541,6 +3745,24 @@ bool GuiApp::launch_dataset_job() {
     // it goes on describing whoever built it.
     if (_redo_model || !workspace_state().model) _built_workspace = _workspace;
     sync_dataset_jobs();
+    // What masking said, beside the frames stamp: the other half of what a
+    // reopened dataset needs to come back as the run that built it.
+    if (!_workspace.empty()) {
+        ReconStamp ms;
+        ms.present = true;
+        ms.engine = "masks";
+        ms.args = {"--enable",       _mask_enable ? "1" : "0",
+                   "--for-features", _mask_features ? "1" : "0",
+                   "--keep",         _mask.keep_subject ? "1" : "0",
+                   "--prompt",       _mask.prompt,
+                   "--negative",     _mask.negative_prompt,
+                   "--features",     _mask.feature_prompt,
+                   "--model",        _model_id,
+                   "--gopro",        _sfm_job.prep.gopro_tracking ? "1" : "0",
+                   "--gopro-renderer", _sfm_job.prep.gopro_renderer,
+                   "--gopro-cache",  _sfm_job.prep.gopro_cache_folder};
+        write_recon_stamp(_workspace, ms, kMaskStampFile);
+    }
     save_run_stencils();
     const std::string stamp = run_log_stamp();
     const fs::path prep_log_file =
@@ -3763,6 +3985,13 @@ void GuiApp::draw_dataset_source() {
                                               ? dmsg::frames_per_second_help_adaptive
                                               : dmsg::frames_per_second_help)
                                        : dmsg::video_fps_this_one_help);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(px(56.0f));
+                if (ui::InputFloatRaw("##start", &s.start, "%g s")) {
+                    s.start = std::max(0.0f, s.start);
+                    edited = true;
+                }
+                ui::help_on_hover(dmsg::start_seconds_help);
                 ImGui::EndDisabled();
             } else {
                 ui::Checkbox(dmsg::frames_in_order, &s.sequential);
@@ -4106,6 +4335,16 @@ void GuiApp::draw_dataset_basics() {
             ui::help_on_hover(dmsg::adaptive_range_help);
             ImGui::Unindent();
         }
+        ui::Checkbox(dmsg::gps_spacing, &_sfm_job.prep.gps_spacing);
+        ui::help_on_hover(dmsg::gps_spacing_help);
+        if (_sfm_job.prep.gps_spacing) {
+            _sfm_job.prep.adaptive_fps = false;
+            ImGui::Indent();
+            ImGui::SetNextItemWidth(px(220.0f));
+            ui::SliderFloat(dmsg::gps_spacing_distance, &_sfm_job.prep.gps_spacing_m,
+                            0.5f, 100.0f, "%.1f m");
+            ImGui::Unindent();
+        }
         ImGui::SetNextItemWidth(px(220.0f));
         ui::SliderInt(dmsg::sharpness_window, &_sfm_job.prep.sharp_window, 1, 8);
         ui::help_on_hover(dmsg::sharpness_window_help);
@@ -4135,18 +4374,27 @@ void GuiApp::draw_dataset_basics() {
 // so there is no camera model to pick here.
 void GuiApp::draw_pano360_options() {
     app::Pano360Options& p = _sfm_job.prep.pano;
-    int mode = p.mode == app::Pano360Mode::Equirect ? 1 : 0;
+    const app::Pano360Mode modes[4] = {app::Pano360Mode::Faces,
+                                       app::Pano360Mode::Corners,
+                                       app::Pano360Mode::Equirect,
+                                       app::Pano360Mode::Fisheye};
+    int mode = p.mode == app::Pano360Mode::Equirect ? 2
+             : p.mode == app::Pano360Mode::Corners ? 1
+             : p.mode == app::Pano360Mode::Fisheye ? 3 : 0;
     ImGui::SetNextItemWidth(px(220.0f));
     if (ui::Combo(dmsg::pano360_output, &mode,
-                  {&dmsg::pano360_output_faces, &dmsg::pano360_output_equirect})) {
-        p.mode = mode == 1 ? app::Pano360Mode::Equirect : app::Pano360Mode::Faces;
+                  {&dmsg::pano360_output_faces, &dmsg::pano360_output_corners,
+                   &dmsg::pano360_output_equirect,
+                   &dmsg::pano360_output_fisheye})) {
+        p.mode = modes[std::clamp(mode, 0, 3)];
         // A face side and a panorama width are not the same number, so the one
         // in the box is meaningless the moment the other is chosen.
         reset_pano_size(_sources, _sfm_job.prep.pano);
         apply_pano_lens(_sources, _sfm_job, _colmap_job);
     }
     ui::help_on_hover(dmsg::pano360_output_help);
-    if (mode == 1 && effective_engine() != Engine::BuiltIn)
+    if (p.mode == app::Pano360Mode::Equirect &&
+        effective_engine() != Engine::BuiltIn)
         ui::TextColoredWrapped(kWarn, dmsg::pano360_colmap_warning);
 }
 
@@ -4157,6 +4405,10 @@ void GuiApp::draw_pano360_size() {
     ui::InputInt(dmsg::pano360_size, &_sfm_job.prep.pano.size, 32, 128);
     if (_sfm_job.prep.pano.size < 0) _sfm_job.prep.pano.size = 0;
     ui::help_on_hover(dmsg::pano360_size_help);
+
+    ImGui::SetNextItemWidth(px(260.0f));
+    ui::SliderInt(dmsg::pano360_sharpen, &_sfm_job.prep.pano.sharpen, 0, 100);
+    ui::help_on_hover(dmsg::pano360_sharpen_help);
 }
 
 
@@ -4399,6 +4651,7 @@ PreviewSource GuiApp::preview_source(size_t input) const {
     if (in.pano360.valid() && _sfm_job.prep.pano.mode != app::Pano360Mode::Off) {
         src.look.eac = in.pano360;
         src.look.views = app::pano360_views(in.pano360, _sfm_job.prep.pano);
+        src.look.pano_sharpen = _sfm_job.prep.pano.sharpen;
     }
     return src;
 }
@@ -4793,18 +5046,41 @@ void GuiApp::draw_masking_options() {
         ImGui::Unindent();
     }
 
+    // Bin mode: masks come straight from the tracker's .people.bin, so SAM
+    // joins nothing (DatasetPrep forces model, prompts and features off).
+    const bool gopro_bin = gopro_bin_masking();
+
     // Asked wherever the dataset ends up with masks at all, including ones
     // that arrived with the photographs: what it decides is the reconstruction,
     // not whether they are written.
     if (_mask_enable || _border_enable || with_masks > 0) {
-        ui::Checkbox(dmsg::mask_for_features, &_mask_features);
-        ui::help_on_hover(dmsg::mask_for_features_help);
+        if (!gopro_bin) {
+            ui::Checkbox(dmsg::mask_for_features, &_mask_features);
+            ui::help_on_hover(dmsg::mask_for_features_help);
+        }
     }
     if (!_mask_enable && !_border_enable) return;
 
     ImGui::Indent();
 
+    if (gopro_bin) {
+        // The only knobs that mean anything here are the ones that leave bin
+        // mode; the checkbox has to stay so it can be unticked.
+        ui::Checkbox(dmsg::gopro_tracking, &_sfm_job.prep.gopro_tracking);
+        ui::help_on_hover(dmsg::gopro_tracking_help);
+        ImGui::PushTextWrapPos(px(560.0f));
+        ui::TextDisabled(dmsg::gopro_bin_hint);
+        ImGui::PopTextWrapPos();
+        ui::InputText(dmsg::gopro_renderer, &_sfm_job.prep.gopro_renderer);
+        ui::InputText(dmsg::gopro_cache_folder, &_sfm_job.prep.gopro_cache_folder);
+        ImGui::Unindent();
+        return;
+    }
+
     const ModelEntry* entry = find_model(_model_id);
+
+    const bool any_pano_builtin =
+        any_pano360(_sources) && effective_engine() == Engine::BuiltIn;
 
     if (_mask_enable) {
         const ModelEntry* before = entry;
@@ -4975,7 +5251,11 @@ void GuiApp::draw_masking_options() {
         // The rest is the memory bank, which photos never get.
         bool any_video = false;
         for (const PrepInput& s : _sources) any_video = any_video || s.is_video;
-        if (any_video) {
+        // Tracking crops and the memory bank are mutually exclusive, in code
+        // (the bridge turns the bank off) as in the panel: each hides the
+        // other, and every gate knob with them.
+        const bool gopro = any_pano_builtin && _sfm_job.prep.gopro_tracking;
+        if (any_video && !gopro) {
             // A clicked object means nothing on any frame but its own without
             // the bank, so it forces the option on and the box shows what will
             // run.
@@ -5001,6 +5281,35 @@ void GuiApp::draw_masking_options() {
             ui::help_on_hover_disabled(dmsg::mask_memory_frames_help);
             ImGui::EndDisabled();
             ImGui::Unindent();
+        }
+        if (any_pano_builtin && !(_mask_memory || !_mask.clicks.empty())) {
+            ui::Checkbox(dmsg::gopro_tracking, &_sfm_job.prep.gopro_tracking);
+            ui::help_on_hover(dmsg::gopro_tracking_help);
+            if (gopro) {
+                ui::InputText(dmsg::gopro_renderer, &_sfm_job.prep.gopro_renderer);
+                ui::InputText(dmsg::gopro_cache_folder, &_sfm_job.prep.gopro_cache_folder);
+                ImGui::PushTextWrapPos(px(560.0f));
+                ui::TextDisabled(dmsg::gopro_bin_hint);
+                ImGui::PopTextWrapPos();
+            }
+        }
+        // The gate chooses between the views of one instant, so it needs a mode
+        // that yields more than one: Off yields none and Equirect one.
+        if (any_pano_builtin && !gopro &&
+            (_sfm_job.prep.pano.mode == app::Pano360Mode::Faces ||
+             _sfm_job.prep.pano.mode == app::Pano360Mode::Fisheye)) {
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(px(200.0f));
+            if (ui::InputInt(dmsg::mask_scan_every, &_mask_scan_every))
+                _mask_scan_every = std::clamp(_mask_scan_every, 1, 1000);
+            ui::help_on_hover(dmsg::mask_scan_every_help);
+            ImGui::SetNextItemWidth(px(200.0f));
+            if (ui::InputInt(dmsg::mask_ray_stride, &_mask_ray_stride))
+                _mask_ray_stride = std::clamp(_mask_ray_stride, 1, 64);
+            ui::help_on_hover(dmsg::mask_ray_stride_help);
+            ImGui::SetNextItemWidth(px(220.0f));
+            ui::SliderFloat(dmsg::mask_merge_cos, &_mask_merge_cos, 0.5f, 1.0f, "%.3f");
+            ui::help_on_hover(dmsg::mask_merge_cos_help);
         }
     }
 
@@ -6126,6 +6435,13 @@ void GuiApp::draw_sfm_advanced() {
               {&dmsg::sfm_sensor_gauge_off, &dmsg::sfm_sensor_gauge_up,
                &dmsg::sfm_exif_attitude_auto});
     ui::help_on_hover(dmsg::sfm_exif_attitude_help);
+
+    // Both GPS paths -- a video's own track and a photo's EXIF -- take one
+    // radius, so one number covers the three dropdowns above.
+    ImGui::SetNextItemWidth(px(260.0f));
+    if (ui::InputInt(dmsg::sfm_gps_max_error, &_sfm_job.gps_max_error))
+        _sfm_job.gps_max_error = std::clamp(_sfm_job.gps_max_error, 1, 10);
+    ui::help_on_hover(dmsg::sfm_gps_max_error_help);
     ImGui::Spacing();
 
     // Unticking it is what throws the resumable state away, so it asks first
@@ -6679,6 +6995,14 @@ void GuiApp::draw_train() {
     if (ui::Button(msg::back_home)) request_go_home();
     ImGui::EndDisabled();
     if (training_busy()) ui::help_on_hover(msg::leaving_stops_training);
+    ImGui::SameLine();
+    // Back to the dataset screen with this dataset loaded, which is the only
+    // route to redoing its reconstruction once a run is under way.
+    ImGui::BeginDisabled(preparing || _cfg.data.empty());
+    if (ui::Button(msg::back_dataset)) request_dataset_screen();
+    ImGui::EndDisabled();
+    if (training_busy()) ui::help_on_hover(msg::leaving_stops_training);
+    else               ui::help_on_hover(msg::back_dataset_help);
     ImGui::SameLine();
     if (_batch_active) {
         if (ui::Button(msg::batch_show_list)) _screen = Screen::Batch;
@@ -9679,6 +10003,7 @@ void GuiApp::draw_confirm_modal() {
         // verb last, so "... and {0}?" cannot be translated at all.
         ui::Text(_pending == Pending::Quit       ? msg::confirm_quit
                : _pending == Pending::GoHome     ? msg::confirm_home
+               : _pending == Pending::GoDataset  ? msg::confirm_dataset_edit
                : _pending == Pending::OpenSplat  ? msg::confirm_open_splat
                : _pending == Pending::StartBatch ? msg::confirm_batch
                : _pending == Pending::StopHere   ? msg::confirm_stop

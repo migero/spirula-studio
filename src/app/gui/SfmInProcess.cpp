@@ -2,6 +2,8 @@
 
 #include "app/gui/SfmInProcess.h"
 
+#include "app/GoProBin.h"
+
 #ifdef SS_TOOL_SFM
 #include "sfm/Pipeline.h"
 #include "sfm/core/Cancel.h"
@@ -117,6 +119,7 @@ InProcessResult run_sfm_in_process(
         out.error = "--help is not a run";
         return out;
     }
+    app::attachSunTracks(req.cfg);
 
     StatusFold fold;
     // Restored when this returns, however it returns, so a second run starts

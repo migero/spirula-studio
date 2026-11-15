@@ -102,6 +102,13 @@ high 16 bits, because one masking prompt of `"people; cars"` builds one tracker
 per phrase and the pool is shared. `~Tracker` frees its own slots and only its
 own.
 
+A tracker's memory is keyed to the camera, because a memory bank holds a feature
+grid in the pixel frame it was encoded from. A 360 capture's ten views of one
+instant are ten videos, so `Masker::run` takes the camera a frame belongs to and
+resets every tracker when it changes -- the ten views are walked one folder at a
+time, and without that the track for a person in `cam3` would be carried into
+`cam4` and then into the next source frame's `cam0`.
+
 The GUI takes this one step further and calls `nn::shutdown()` when a dataset
 job ends (`DatasetPrep::run`), which destroys the device outright; the mask
 preview only unloads the model, since reopening the panel is common and

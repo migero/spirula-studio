@@ -13,6 +13,7 @@
 #include "app/gui/edit/EditDoc.h"
 #include "app/gui/edit/EditTool.h"
 #include "app/gui/edit/ElementGrid.h"
+#include "app/gui/edit/PointsDoc.h"
 #include "app/gui/edit/SelectShape.h"
 #include "app/gui/edit/TransformTool.h"
 
@@ -104,6 +105,8 @@ public:
     bool sync_others() const { return _others_open && _sync_others; }
     // The editing panel: tools, options, selection, actions, history.
     void draw_panel();
+    // The sky dome's own controls, under the Select tab.
+    void draw_sky_section(EditDoc& d, float full);
     // One line under the viewport: the active tool and its keys.
     void draw_status();
 
@@ -332,6 +335,12 @@ private:
     int _adjust_kind = 0, _adjust_head = -1;
     bool _adjust_live = false;
     double _preview_at = 0.0;
+
+    // The sky dome's settings and what the last one measured.
+    int _sky_subdivisions = 5;
+    float _sky_percentile = 99.0f;
+    PointsDoc::DomeFit _sky_fit;
+    bool _sky_added = false;
 
     int _tab = 0;                     // 0 select, 1 transform
     bool _tab_force = false;

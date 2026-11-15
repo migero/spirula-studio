@@ -4,6 +4,14 @@
 
 #include "app/gui/ReconStamp.h"
 #include "app/gui/mask/MaskLayer.h"
+#include "app/PersonStore.h"
+#include "app/GoProBin.h"
+#include "app/GoProMask.h"
+#ifdef SS_BUILD_SAM
+#include "app/TrackingCropBridge.h"
+#endif
+#include "app/ScanIndex.h"
+#include "core/Env.h"
 #include "sfm/core/Resume.h"
 
 #include "i18n/catalog/Log.h"
@@ -174,12 +182,12 @@ bool inside(const fs::path& p, const fs::path& root) {
 // one camera: cam0/ and cam1/ restart the numbering, and a frame id that goes
 // backwards re-triggers seeds that have already been applied.
 bool frame_ids_from_stems(const std::vector<fs::path>& files,
-                          std::vector<int64_t>& ids) {
+                          std::vector<int64_t>& ids, bool one_camera = true) {
     ids.clear();
     if (files.empty()) return false;
     const fs::path dir = files.front().parent_path();
     for (const fs::path& f : files) {
-        if (f.parent_path() != dir) return false;
+        if (one_camera && f.parent_path() != dir) return false;
         const std::string stem = f.stem().string();
         size_t b = stem.size();
         while (b > 0 && std::isdigit((unsigned char)stem[b - 1])) b--;
@@ -188,6 +196,7 @@ bool frame_ids_from_stems(const std::vector<fs::path>& files,
     }
     return true;
 }
+
 
 #ifdef SS_BUILD_SAM
 // Preview clicks -> the masker's seeds, against the list it will walk
@@ -593,6 +602,59 @@ int64_t expected_frames(const PrepJob& job, float fps, double src_fps,
 }
 
 }  // namespace
+
+// A seconds value as ffmpeg's -ss reads it, in the compact form it prints back.
+static std::string seconds_arg(float seconds) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%g", (double)seconds);
+    return b;
+}
+
+// The number a name ends with, which is what the extractors write a frame's
+// number as. Every view of one instant carries the same one, so it is also the
+// key that groups them.
+static bool instant_from_stem(const std::string& stem, int64_t& out) {
+    size_t b = stem.size();
+    while (b > 0 && std::isdigit((unsigned char)stem[b - 1])) b--;
+    if (b == stem.size()) return false;
+    out = std::strtoll(stem.c_str() + b, nullptr, 10);
+    return true;
+}
+
+ViewInstants group_views_by_instant(const std::vector<std::string>& cameras,
+                                    const std::vector<app::Pano360View>& views,
+                                    const std::vector<std::string>& stems) {
+    ViewInstants out;
+    const size_t n = cameras.size();
+    if (n == 0 || views.empty() || stems.size() != n) return out;
+    out.view.assign(n, -1);
+    out.instant.assign(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        for (size_t v = 0; v < views.size(); v++)
+            if (views[v].dir == cameras[i]) { out.view[i] = (int)v; break; }
+        if (out.view[i] < 0 || !instant_from_stem(stems[i], out.instant[i]))
+            return out;
+    }
+    // Every folder the plan names is on disk, and nothing else is: `cameras` is
+    // one entry per FILE, so the test is over the distinct folders.
+    std::vector<std::string> dirs;
+    for (const std::string& c : cameras)
+        if (std::find(dirs.begin(), dirs.end(), c) == dirs.end()) dirs.push_back(c);
+    if (dirs.size() != views.size()) return out;
+    for (const std::string& c : dirs)
+        if (std::none_of(views.begin(), views.end(), [&](const app::Pano360View& v) {
+                return v.dir == c;
+            }))
+            return out;
+    out.order.resize(n);
+    for (size_t i = 0; i < n; i++) out.order[i] = i;
+    std::stable_sort(out.order.begin(), out.order.end(), [&](size_t a, size_t b) {
+        if (out.instant[a] != out.instant[b]) return out.instant[a] < out.instant[b];
+        return out.view[a] < out.view[b];
+    });
+    out.ok = true;
+    return out;
+}
 
 bool is_video_path(const std::string& path) {
     const std::string e = lower_ext(path);
@@ -1248,12 +1310,12 @@ bool DatasetPrep::run(const PrepJob& job_in, PrepResult& out, std::string& error
         // The panel that watches the measuring pass wants the whole list, so
         // a folder of photographs among the clips is a row that says so rather
         // than a gap. A video's length arrives with its first measured step.
-        if (job.adaptive_fps) {
+        if (job.adaptive_fps || job.gps_spacing) {
             std::vector<ScanRow> rows(job.inputs.size());
             for (size_t i = 0; i < job.inputs.size(); i++) {
                 rows[i].name = leaf_name(job.inputs[i].path);
                 rows[i].video = job.inputs[i].is_video &&
-                                !every_frame(job, job.inputs[i]);
+                                (job.gps_spacing || !every_frame(job, job.inputs[i]));
                 if (!rows[i].video) rows[i].frames = planned[i];
             }
             _prog->scan_reset(std::move(rows));
@@ -1305,6 +1367,8 @@ bool DatasetPrep::run(const PrepJob& job_in, PrepResult& out, std::string& error
     // The frames exist now, so what masking is asked to do can still be the
     // answer the user gave while watching them go by.
     if (refresh_masks) refresh_masks(job);
+    if(job.gopro_tracking)for(size_t i=0;i<job.inputs.size();i++)
+        if(job.inputs[i].is_video&&job.inputs[i].mask_dir.empty())per[i].have_masks=false;
 
     // A subject model (BiRefNet) finds what to mask by itself, and reads no
     // words to find the sky with.
@@ -1321,14 +1385,25 @@ bool DatasetPrep::run(const PrepJob& job_in, PrepResult& out, std::string& error
 
     std::vector<int64_t> mask_planned(job.inputs.size(), 0);
     if (job.mask_enable) {
+        // Bin mode: the tracker's .people.bin is an input's mask target, and
+        // no prompt, click or feature prompt joins it. Only bin inputs count
+        // -- an input that still needs the masker keeps the checks below.
+        bool bin_target = true;
+        for (size_t i = 0; i < job.inputs.size(); i++) {
+            if (per[i].have_masks) continue;
+            if (!(job.gopro_tracking && job.inputs[i].is_video &&
+                  job.gopro_renderer.empty()))
+                bin_target = false;
+        }
         if (!subject && job.mask_prompt.empty() && job.mask_clicks.empty() &&
-            !want_features) {
+            !want_features && !bin_target) {
             error = lmsg::err_mask_no_target.get();
             return false;
         }
         // Half-masking reads as a masking run that worked, so refuse instead:
         // without a text prompt, every input needs clicks of its own.
-        if (!subject && job.mask_prompt.empty() && !job.mask_clicks.empty()) {
+        if (!subject && job.mask_prompt.empty() && !job.mask_clicks.empty() &&
+            !bin_target) {
             std::string unprompted;
             for (size_t i = 0; i < job.inputs.size(); i++) {
                 if (per[i].have_masks || !clicks_for(job, job.inputs[i]).empty())
@@ -1511,10 +1586,14 @@ static bool builtin_job(const PrepJob& job, const PrepInput& in,
     }
     if (frames) *frames = probe.frame_count;
     const double src_fps = probe.fps > 1.0 ? probe.fps : 30.0;
-    const bool every = every_frame(job, in);
+    const bool every = !job.gps_spacing && every_frame(job, in);
     const int window = every ? 1 : std::max(job.sharp_window, 1);
     fx.input = in.path;
     fx.device = job.device;
+    // Seconds -> source frames, against the rate the probe just read (the
+    // fallback below is for a container that states its rate, not for a user
+    // asking to skip time).
+    fx.start_frame = std::llround(std::max(in.start, 0.0f) * src_fps);
     // This run has its own ffmpeg path (extract_video_ffmpeg), numbered by
     // candidate rather than source frame.
     fx.decoder = app::FrameDecoder::Builtin;
@@ -1522,8 +1601,9 @@ static bool builtin_job(const PrepJob& job, const PrepInput& in,
     fx.keep = window > 1 ? window : 0;
     fx.max_frames = job.max_frames;
     fx.sync_tracks = job.sync_tracks;
-    fx.adaptive = job.adaptive_fps && !every;
+    fx.adaptive = job.adaptive_fps && !job.gps_spacing && !every;
     fx.adaptive_range = job.adaptive_range;
+    fx.gps_spacing_m = job.gps_spacing && !every ? job.gps_spacing_m : 0;
     fx.auto_rotate = job.auto_rotate;
     fx.quality = 95;
     if (in.pano360.valid()) {
@@ -1532,6 +1612,7 @@ static bool builtin_job(const PrepJob& job, const PrepInput& in,
         if (!views.empty()) {
             fx.eac = in.pano360;
             fx.views = views;
+            fx.pano_sharpen = job.pano.sharpen;
         }
     }
     return true;
@@ -1546,7 +1627,7 @@ bool DatasetPrep::plan_group(const PrepJob& job, size_t at, std::string& error) 
     (void)job; (void)at; (void)error;
     return true;
 #else
-    if (!job.adaptive_fps || _plans.size() != job.inputs.size()) return true;
+    if (!job.adaptive_fps || job.gps_spacing || _plans.size() != job.inputs.size()) return true;
     if (_planned[at] || every_frame(job, job.inputs[at])) return true;
     const size_t g = fps_group(job.inputs, at);
     std::vector<size_t> rows;
@@ -1651,7 +1732,7 @@ bool DatasetPrep::extract_video_builtin(const PrepJob& job, const PrepInput& in,
     // Only where this run is going to measure for itself: a plan handed in was
     // made by plan_group, which reported its own pass.
     ScanProgress scan(_prog, probe.frame_count);
-    if (fx.adaptive && fx.plan.empty()) {
+    if ((fx.adaptive || fx.gps_spacing_m > 0) && fx.plan.empty()) {
         scan.begin(leaf_name(in.path));
         sinks.scanning = [&](int64_t done, int64_t total) {
             scan.update(done, total);
@@ -1709,7 +1790,7 @@ bool DatasetPrep::extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
         streams = facts.tracks.size();
     if (streams > 1) out.per_folder_cameras = true;
 
-    const bool every = every_frame(job, in);
+    const bool every = !job.gps_spacing && every_frame(job, in);
     const int window = every ? 1 : std::max(job.sharp_window, 1);
     const int group = candidate_group(job, in);
     const bool fisheye = streams > 1 && !facts.tracks.empty() &&
@@ -1749,11 +1830,16 @@ bool DatasetPrep::extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
         std::error_code ec;
         fs::create_directories(cand, ec);
         char vf[64];
-        std::snprintf(vf, sizeof vf, "fps=%g", (double)input_fps(job, in) * group);
+        const double candidate_fps = input_fps(job, in) > 0
+                                         ? input_fps(job, in) * group
+                                         : std::max(facts.fps, 30.0);
+        std::snprintf(vf, sizeof vf, "fps=%g", candidate_fps);
         // ffmpeg turns the picture by the container's matrix unless told not
         // to, which is what the built-in decoder's auto_rotate matches.
         std::vector<std::string> argv{job.ffmpeg_exe, "-nostdin", "-y"};
         if (!job.auto_rotate) argv.push_back("-noautorotate");
+        if (in.start > 0.0f)
+            argv.insert(argv.end(), {"-ss", seconds_arg(in.start)});
         argv.insert(argv.end(), {"-i", track_path});
         if (every) append_every_frame_args(argv, job.max_frames);
         else argv.insert(argv.end(), {"-vf", vf});
@@ -1784,8 +1870,12 @@ bool DatasetPrep::extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
         // ffmpeg already stopped at the cap, which is where the built-in
         // decoder stops too; spreading the cap would skip frames.
         so.max_frames = every ? 0 : job.max_frames;
-        so.adaptive = job.adaptive_fps && !every;
+        so.adaptive = job.adaptive_fps && !job.gps_spacing && !every;
         so.range = job.adaptive_range;
+        so.gps_spacing_m = job.gps_spacing && !every ? job.gps_spacing_m : 0;
+        so.gps_input = in.path;
+        so.gps_fps = candidate_fps;
+        so.gps_time_offset_s = std::max(0.0f, in.start);
         so.window = window;
         if (fisheye) so.view = app::MotionView::Fisheye;
         so.out_fov = fisheye ? 3.4034f : 1.5708f;
@@ -1827,7 +1917,7 @@ namespace {
 // the JPEG encode does not, so overlapping them is what fills the machine.
 bool warp_canvases(const fs::path& from, const fs::path& to,
                    const app::Pano360Layout& layout,
-                   const std::vector<app::Pano360View>& views,
+                   const std::vector<app::Pano360View>& views, int sharpen,
                    const std::atomic<bool>& cancel,
                    const std::function<void(int64_t)>& progress,
                    std::string& error) {
@@ -1854,6 +1944,7 @@ bool warp_canvases(const fs::path& from, const fs::path& to,
             error = fmt(lmsg::err_360_frame_read, {f.string()});
             return false;
         }
+        app::pano360_sharpen(px, w, h, layout, sharpen, 0);
         std::atomic<bool> ok{true};
         std::vector<std::thread> pool;
         pool.reserve(views.size());
@@ -1888,6 +1979,8 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
         error = fmt(lmsg::err_ffmpeg_missing, {job.ffmpeg_exe});
         return false;
     }
+    VideoFacts facts;
+    ffmpeg_probe_video(job.ffmpeg_exe, in.path, facts, _cancel);
     const std::vector<app::Pano360View> views =
         app::pano360_views(in.pano360, job.pano);
     if (views.empty()) {
@@ -1900,7 +1993,7 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
                                  views[0].height}), /*detail=*/false);
 
     const fs::path ws = job.workspace;
-    const bool every = every_frame(job, in);
+    const bool every = !job.gps_spacing && every_frame(job, in);
     const int window = every ? 1 : std::max(job.sharp_window, 1);
     const int group = candidate_group(job, in);
     std::error_code ec;
@@ -1914,14 +2007,18 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
     remove_tree(cand);
     fs::create_directories(cand, ec);
     char pre[64] = "";
-    if (!every)
-        std::snprintf(pre, sizeof pre, "fps=%g", (double)input_fps(job, in) * group);
+    const double candidate_fps = input_fps(job, in) > 0
+                                     ? input_fps(job, in) * group
+                                     : std::max(facts.fps, 30.0);
+    if (!every) std::snprintf(pre, sizeof pre, "fps=%g", candidate_fps);
     const std::string graph = app::pano360_graph(in.pano360, pre);
     // A 360 capture's geometry is the EAC layout, not the display matrix: the
     // built-in path leaves it alone and so must this one.
-    std::vector<std::string> argv{job.ffmpeg_exe, "-nostdin", "-y", "-noautorotate",
-                                  "-i", in.path, "-filter_complex", graph, "-map",
-                                  std::string("[") + app::pano360_canvas_pad() + "]"};
+    std::vector<std::string> argv{job.ffmpeg_exe, "-nostdin", "-y", "-noautorotate"};
+    if (in.start > 0.0f)
+        argv.insert(argv.end(), {"-ss", seconds_arg(in.start)});
+    argv.insert(argv.end(), {"-i", in.path, "-filter_complex", graph, "-map",
+                             std::string("[") + app::pano360_canvas_pad() + "]"});
     if (every) append_every_frame_args(argv, job.max_frames);
     argv.insert(argv.end(), {"-qscale:v", "2", (cand / "c_%06d.jpg").string()});
     int rc = exec(argv);
@@ -1940,8 +2037,12 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
     FrameSelectOptions so;
     so.group = group;
     so.max_frames = every ? 0 : job.max_frames;
-    so.adaptive = job.adaptive_fps && !every;
+    so.adaptive = job.adaptive_fps && !job.gps_spacing && !every;
     so.range = job.adaptive_range;
+    so.gps_spacing_m = job.gps_spacing && !every ? job.gps_spacing_m : 0;
+    so.gps_input = in.path;
+    so.gps_fps = candidate_fps;
+    so.gps_time_offset_s = std::max(0.0f, in.start);
     so.window = window;
     so.view = app::MotionView::Packed360;
     so.eac = in.pano360;
@@ -1972,7 +2073,7 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
     RateLimitedProgress progress(_prog, Stage::Frames, lmsg::noun_frames_written,
                                  _frames_tally);
     const bool ok = warp_canvases(
-        kept, fs::path(images), in.pano360, views, _cancel,
+        kept, fs::path(images), in.pano360, views, job.pano.sharpen, _cancel,
         [&](int64_t done) { progress.update(done * (int64_t)views.size()); },
         error);
     remove_tree(kept);
@@ -2535,11 +2636,15 @@ bool DatasetPrep::generate_masks(const PrepJob& job, const PrepInput& in,
                                  const std::string& masks,
                                  const std::string& feature_masks, bool train,
                                  bool& folded, std::string& error) {
-    if (!backends().builtin_masking) {
+    // A run whose renderer field is empty takes the masks from the tracker's
+    // own .people.bin, which needs neither the SAM backend nor a model.
+    const bool bin_mode =
+        job.gopro_tracking && in.is_video && job.gopro_renderer.empty();
+    if (!backends().builtin_masking && !bin_mode) {
         error = lmsg::err_no_builtin_segmentation.get();
         return false;
     }
-    if (job.mask_model_path.empty()) {
+    if (job.mask_model_path.empty() && !bin_mode) {
         error = lmsg::err_mask_model_not_downloaded.get();
         return false;
     }
@@ -2565,8 +2670,15 @@ bool DatasetPrep::generate_masks_builtin(const PrepJob& job, const PrepInput& in
     // read where they are, and those already have masks -- but the guard costs
     // nothing and the alternative is masking a folder of masks.
     std::vector<fs::path> files = walk_images(images, masks);
-    const bool features = !feature_masks.empty();
-    if (features)
+    const bool use_bridge = job.gopro_tracking && train && in.is_video &&
+                            !job.gopro_renderer.empty();
+    // Empty renderer field: the tracker's own .people.bin is the mask source
+    // and the run needs no SAM model at all, so features are forced off with
+    // it. A nonempty field is the renderer path, unchanged.
+    const bool bin_mode = job.gopro_tracking && in.is_video &&
+                          job.gopro_renderer.empty();
+    const bool features = !feature_masks.empty() && !bin_mode;
+    if (!feature_masks.empty())
         files.erase(std::remove_if(files.begin(), files.end(),
                                    [&](const fs::path& f) {
                                        return inside(f, fs::path(feature_masks));
@@ -2622,13 +2734,57 @@ bool DatasetPrep::generate_masks_builtin(const PrepJob& job, const PrepInput& in
     mo.seeds = seeds_from_clicks(
         clicks, cameras, ids,
         /*exact=*/(!in.is_video && in.packed_lenses < 2) || by_stem);
+    // Bin mode reaches no SAM: a kept-subject flag or clicks left over from an
+    // earlier run cannot act on the tracker's own masks, and must not refuse it.
+    if (bin_mode) {
+        mo.keep_prompted = false;
+        mo.seeds.clear();
+    }
 
+    std::vector<int64_t> bridge_ids;
+    // Source frames before the tracking file's first outline come back as
+    // fallback crops (a person is too large for the player's tracker yet), so
+    // they are skipped, and their images and masks removed after the pass.
+    int64_t gopro_coverage = -1;
+    std::vector<size_t> gopro_untracked;
+    // False once the renderer is dead for good: the rest of the job runs the
+    // plain masker, and nothing is deleted in that case (the coverage of the
+    // tracking file is then unknown).
+    bool bridge_mode = use_bridge || bin_mode;
+    int mask_done = 0;
+    if (use_bridge || bin_mode) {
+        if (in.pano360.track_w!=4096 || in.pano360.track_h!=1344 ||
+            (job.pano.mode!=app::Pano360Mode::Faces && job.pano.mode!=app::Pano360Mode::Corners &&
+             job.pano.mode!=app::Pano360Mode::Fisheye) ||
+            mo.keep_prompted || !mo.seeds.empty() || !frame_ids_from_stems(files,bridge_ids,false)) {
+            error="GoPro tracking crops require original MAX Perspective/Corner/Fisheye frames, source-frame filenames, and text-based object removal without clicks.";
+            return false;
+        }
+        mo.video=false;
+    }
     sam::Masker masker;
-    if (!masker.init(mo, error)) return false;
-    // Nothing named for training still writes masks/ when there is a stencil
-    // to put in it, and an all-white one when there is not would be noise.
-    const bool write_train = train && (masker.hasTarget() || !in.stencil.empty());
-    const bool write_features = features && masker.hasFeatureMask();
+    bool masker_ready = false;
+    // A bin run needs no model: the tracker's own shapes are the mask product.
+    // Only a fallback to plain detection loads one, right when it happens.
+    auto ensure_plain = [&](std::string& err) -> bool {
+        if (masker_ready) return true;
+        if (!masker.init(mo, err)) return false;
+        masker_ready = true;
+        return true;
+    };
+    bool write_train, write_features;
+    if (bin_mode) {
+        write_train = train;
+        write_features = false;
+    } else {
+        if (!masker.init(mo, error)) return false;
+        if(use_bridge&&masker.subjectMode()){error="GoPro tracking crops require a SAM model and text prompts";return false;}
+        // Nothing named for training still writes masks/ when there is a
+        // stencil to put in it, and an all-white one when there is not would
+        // be noise.
+        write_train = train && (masker.hasTarget() || !in.stencil.empty());
+        write_features = features && masker.hasFeatureMask();
+    }
     if (!write_train && !write_features) return true;
 
     // The stencil goes in here rather than in a pass of its own: it is one AND
@@ -2670,7 +2826,7 @@ bool DatasetPrep::generate_masks_builtin(const PrepJob& job, const PrepInput& in
         if (!on) return d;
         // Masks mirror the image tree, so cam0/ and cam1/ keep their names.
         d.path = root / rel.parent_path() / (rel.stem().string() + ".png");
-        d.write = !(job.resume && !job.redo_masks && fs::exists(d.path, ec));
+        d.write = use_bridge || !(job.resume && !job.redo_masks && fs::exists(d.path, ec));
         if (d.write) fs::create_directories(d.path.parent_path(), ec);
         return d;
     };
@@ -2688,26 +2844,329 @@ bool DatasetPrep::generate_masks_builtin(const PrepJob& job, const PrepInput& in
         todo_fdst.push_back(std::move(fdst));
     }
 
+    // ---- the view gate ----
+    //
+    // Measured on a 552-frame walk, eight of ten views held no mask, so all ten
+    // is nine calls finding nothing. Every mask_scan_every frames, all ten.
+    const std::vector<app::Pano360View> pano_views =
+        (in.pano360.valid() && job.pano.mode != app::Pano360Mode::Off)
+            ? app::pano360_views(in.pano360, job.pano)
+            : std::vector<app::Pano360View>{};
+    // The folders on disk must BE the plan's views, and every name must carry
+    // the number its views agree on: a gate on the wrong geometry searches the
+    // wrong views, and a name that cannot be placed in time cannot be grouped.
+    std::vector<std::string> todo_cameras, todo_stems;
+    for (size_t q = 0; q < todo.size(); q++) {
+        todo_cameras.push_back(cameras[todo[q]]);
+        todo_stems.push_back(todo_files[q].stem().string());
+    }
+    const ViewInstants grouping =
+        group_views_by_instant(todo_cameras, pano_views, todo_stems);
+    // scan_every of 1 is the gate off: every instant is due a full scan anyway.
+    const bool gate_ok = !use_bridge && write_train && !write_features && grouping.ok &&
+                         pano_views.size() > 1 && job.mask_scan_every > 1;
+    // Seconds between the instants being walked, for the tracks' velocity. The
+    // extraction rate is the user's choice, and frames are not seconds.
+    const double gate_dt = job.video_fps > 0.0f ? 1.0 / (double)job.video_fps : 1.0;
+
+    // Frame-major, so one instant's ten views are decided together and a track
+    // found in one reaches the rest: walk_images sorted camera-major, which is
+    // fine for a per-camera tracker and useless for a gate.
+    std::vector<size_t> order(todo.size());
+    for (size_t q = 0; q < order.size(); q++) order[q] = q;
+    if (gate_ok || use_bridge || bin_mode) {
+        if(!grouping.ok){error="Cannot associate dataset views with GoPro source frames";return false;}
+        order = grouping.order;
+    } else {
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) {
+                             return ids[todo[a]] < ids[todo[b]];
+                         });
+    }
+    std::vector<size_t> todo_by_frame;
+    std::vector<fs::path> files_by_frame;
+    std::vector<Dst> dst_by_frame, fdst_by_frame;
+    todo_by_frame.reserve(order.size());
+    for (size_t q : order) {
+        todo_by_frame.push_back(todo[q]);
+        files_by_frame.push_back(todo_files[q]);
+        dst_by_frame.push_back(std::move(todo_dst[q]));
+        fdst_by_frame.push_back(std::move(todo_fdst[q]));
+    }
+    todo.swap(todo_by_frame);
+    todo_files.swap(files_by_frame);
+    todo_dst.swap(dst_by_frame);
+    todo_fdst.swap(fdst_by_frame);
+
+    app::TrackingCropBridge bridge;
+    app::TrackingFrame tracking_frame;
+    std::map<int,std::vector<float>> target_rays;
+    if(use_bridge && !bin_mode && !todo.empty()) {
+        std::vector<int64_t> wanted_frames;
+        for(size_t q:todo)if(wanted_frames.empty()||wanted_frames.back()!=bridge_ids[q])wanted_frames.push_back(bridge_ids[q]);
+        if(!bridge.start(job.gopro_renderer,job.gopro_cache_folder,in.path,wanted_frames,_cancel,
+                         [this](const std::string& text){log(text);},error)) {
+            // Same fallback as a mid-run death: a renderer that cannot start
+            // is a data-sourcing problem, and masking without it still makes
+            // the dataset the run was asked for.
+            bridge_mode = false;
+            error.clear();
+            log(lmsg::gopro_bridge_fallback.get(), false);
+        } else {
+            log("GoPro tracking crops enabled; source images are retained and masks are regenerated.",false);
+        }
+    }
+
+    app::GoProBin bin;
+    app::GoProBinFrame bin_frame;
+    int64_t bin_index = -1;
+    bool bin_live = false;
+    bool bin_fell = false;
+    double bin_fps = 30.0;
+    if (bin_mode && !todo.empty()) {
+        double src_fps = 0.0;
+#ifdef SS_HAVE_VIDEO
+        {
+            video::VideoProbe probe;
+            std::string probe_err;
+            if (video::probe_video(in.path, probe, probe_err) && probe.fps > 1.0)
+                src_fps = probe.fps;
+        }
+#endif
+        if (src_fps <= 1.0) {
+            VideoFacts facts;
+            if (ffmpeg_probe_video(job.ffmpeg_exe, in.path, facts, _cancel) &&
+                facts.fps > 1.0)
+                src_fps = facts.fps;
+        }
+        if (src_fps > 0.0) bin_fps = src_fps;
+        std::string bin_err;
+        const fs::path bin_path =
+            app::GoProBin::find(job.gopro_cache_folder, in.path);
+        bin_live = !bin_path.empty() && bin.open(bin_path, bin_err);
+        if (!bin_live) {
+            // A missing bin is bin mode's whole game lost, not a case for the
+            // plain-masker fallback: the panel hid the prompts, so the fallback
+            // could only die inside the masker with a message about --text.
+            bridge_mode = false;
+            const fs::path beside =
+                fs::path(in.path).parent_path() /
+                (fs::path(in.path).filename().string() + ".people.camera.bin");
+            if (!bin_path.empty())
+                error = fmt(lmsg::err_gopro_bin_unusable,
+                            {bin_path.string(), bin_err});
+            else
+                error = fmt(lmsg::err_gopro_bin_missing,
+                            {beside.string(),
+                             job.gopro_cache_folder.empty() ? std::string("-")
+                                                            : job.gopro_cache_folder});
+            return false;
+        }
+    }
+
     // Encoding a 1080p mask costs about a third of what the model costs to
     // produce it, and none of it needs the GPU.
     app::WriterPool writers;
     ImagePrefetch reader(todo_files, _cancel, job.image_gamut, job.image_is_linear);
     RateLimitedProgress progress(_prog, Stage::Masks, lmsg::noun_images_masked,
                                  _masks_tally);
+
+    app::PersonStore people;
+    app::ScanIndex scanned;
+    // Per job, not function-static: a second run must not inherit the first's
+    // tracks or its "already searched this frame" answers.
+    int64_t gate_frame = -1;
+    std::vector<int> gate_set;
+    if (gate_ok) {
+        people.configure(job.mask_merge_cos);
+        scanned.resize(std::max<size_t>(1, images.size()));
+    }
+
+    // SS_GOBIN_DEBUG=<N>: dump the first N distinct source frames the bin
+    // rasters, one PNG per view, with the removed pixels tinted red.
+    fs::path gobin_debug_dir;
+    int gobin_debug_left = 0;
+    if (bin_mode) {
+        if (const char* v = spirula::env("GOBIN_DEBUG")) {
+            const long n = std::strtol(v, nullptr, 10);
+            if (n > 0) {
+                gobin_debug_left = (int)std::min<long>(n, 1 << 20);
+                gobin_debug_dir = fs::path(job.workspace) / "logs" / "gobin-debug";
+                std::error_code dec;
+                fs::create_directories(gobin_debug_dir, dec);
+            }
+        }
+    }
+    int64_t gobin_debug_src = -1;
+    bool gobin_debug_frame = false;
+    auto gobin_debug_dump = [&](const fs::path& file, const nn::Image& view,
+                                const sam::Mask& msk) {
+        std::vector<uint8_t> px((size_t)view.width * view.height * 3);
+        for (size_t p = 0; p < px.size() / 3; p++) {
+            const uint8_t* src = view.data.data() + p * 3;
+            uint8_t* out = px.data() + p * 3;
+            const float on = msk.data[p] == 0 ? 0.6f : 0.0f;
+            out[0] = (uint8_t)(src[0] * (1.0f - on) + on * 255.0f);
+            out[1] = (uint8_t)(src[1] * (1.0f - on));
+            out[2] = (uint8_t)(src[2] * (1.0f - on));
+        }
+        const std::string camera = file.parent_path().filename().string();
+        stbi_write_png((gobin_debug_dir /
+                        (file.stem().string() + (camera.empty() ? "" : "_" + camera) +
+                         ".png")).string().c_str(),
+                       view.width, view.height, 3, px.data(), view.width * 3);
+    };
+
     for (size_t k = 0; k < todo.size(); k++) {
         if (_cancel.load()) { error = lmsg::err_cancelled.get(); return false; }
         sfm::ExifTransform turn;
         nn::Image img = reader.take(turn);
         if (img.empty()) {
+            if(use_bridge || bin_mode){error="Cannot read GoPro target image: "+todo_files[k].string();return false;}
             log(fmt(lmsg::warn_unreadable_skipped, {todo_files[k].string()}), false);
             continue;
         }
         sam::Mask mask, fmask;
-        if (!masker.run(img, mask, nullptr, ids[todo[k]],
-                        write_features ? &fmask : nullptr)) {
-            error = fmt(lmsg::err_masking_failed_on,
-                        {todo_files[k].filename().string(), masker.lastError()});
-            return false;
+        // Which view this file is, if the gate is on at all. `grouping` is in
+        // the order the files were found and k walks the reordered list, so the
+        // permutation is what maps one onto the other.
+        const size_t g = (gate_ok || use_bridge || bin_mode) ? grouping.order[k] : 0;
+        const int view_i = (gate_ok || use_bridge || bin_mode) ? grouping.view[g] : -1;
+        // The gate asks the store for this instant ONCE, so every view of one
+        // moment is decided against the same tracks.
+        if (gate_ok && view_i >= 0 && gate_frame != grouping.instant[g]) {
+            gate_frame = grouping.instant[g];
+            gate_set = app::gate_search_views(people, pano_views, gate_frame,
+                                              pano_views.size(), 0, scanned,
+                                              job.mask_scan_every);
+        }
+        // Decided after the bridge block: a renderer dead for good unmasks
+        // the gate, and every view left is masked by plain detection.
+        if (bridge_mode) {
+            if(!turn.identity() || view_i<0){error="GoPro bridge requires unturned extracted view images";return false;}
+            const auto source_index=bridge_ids[todo[k]];
+            if (bin_mode) {
+                if (bin_index != source_index) {
+                    std::string bin_err;
+                    bin_fell = !bin.lookup((double)source_index / bin_fps, bin_fps,
+                                           bin_frame, bin_err) ||
+                               bin_frame.people.empty();
+                    bin_index = source_index;
+                }
+            } else if(tracking_frame.index!=source_index) {
+                if(!bridge.read(source_index,tracking_frame,error)) {
+                    // One dead renderer does not fail the whole job: drop to
+                    // the plain per-view masking for what is left of it.
+                    bridge_mode = false;
+                    const int64_t skipped = (int64_t)gopro_untracked.size();
+                    gopro_coverage = -1;
+                    gopro_untracked.clear();
+                    error.clear();
+                    log(lmsg::gopro_bridge_fallback.get(), false);
+                    if (skipped > 0)
+                        log(fmt(lmsg::gopro_untracked_left, {skipped}), false);
+                } else {
+                    log(fmt(lmsg::gopro_frame_crops,
+                            {source_index, tracking_frame.crops.size(),
+                             tracking_frame.fallback}), false);
+                }
+            }
+        }
+        const bool search = view_i < 0 || (use_bridge && !bridge_mode) ||
+                            std::find(gate_set.begin(), gate_set.end(), view_i) !=
+                                gate_set.end();
+        if (bridge_mode) {
+            const auto source_index=bridge_ids[todo[k]];
+            if (gopro_coverage < 0) {
+                if (bin_mode ? bin_fell : tracking_frame.fallback) {
+                    gopro_untracked.push_back(k);
+                    ++done;
+                    progress.update(done, false);
+                    continue;
+                }
+                gopro_coverage = source_index;
+                log(fmt(lmsg::gopro_coverage_from, {gopro_coverage}), false);
+            }
+            if (bin_mode) {
+                // The caller's base is what the raster leaves alone, so it must
+                // arrive written: 255 to keep, 0 inside the tracker's shapes.
+                mask.data.assign((size_t)img.width * img.height, 255);
+                mask.width = img.width;
+                mask.height = img.height;
+                std::string mask_err;
+                if(!app::gopro_mask_frame(pano_views[(size_t)view_i], img.width,
+                                          img.height, bin_frame,
+                                          mask.data.data(), mask_err)) {
+                    // Corrupt record data: bin mode has no plain-masker to
+                    // fall back to (the panel hid the prompts), so the run
+                    // names the record's failure and stops.
+                    error = mask_err.empty() ? "GoPro tracking mask failed"
+                                             : mask_err;
+                    return false;
+                }
+                if (!gobin_debug_dir.empty()) {
+                    const int64_t dbg_src = (int64_t)bridge_ids[todo[k]];
+                    if (dbg_src != gobin_debug_src) {
+                        gobin_debug_src = dbg_src;
+                        gobin_debug_frame = gobin_debug_left > 0;
+                        if (gobin_debug_frame) --gobin_debug_left;
+                    }
+                    if (gobin_debug_frame) gobin_debug_dump(todo_files[k], img, mask);
+                }
+                ++mask_done;
+            } else {
+                for (auto& crop : tracking_frame.crops) {
+                    if (crop.segmented) continue;
+                    if (_cancel.load()) {
+                        error = lmsg::err_cancelled.get();
+                        return false;
+                    }
+                    sam::Mask predicted;
+                    if (!masker.run(crop.image, predicted, nullptr, source_index)) {
+                        error = masker.lastError();
+                        return false;
+                    }
+                    crop.mask = std::move(predicted.data);
+                    crop.segmented = true;
+                    crop.image.data.clear();
+                }
+                auto& rays=target_rays[view_i];
+                if(rays.size()!=(size_t)img.width*img.height*3)
+                    rays=app::tracking_target_rays(in.pano360,pano_views[view_i],img.width,img.height);
+                app::project_tracking_masks(rays,tracking_frame,mask.data);
+                mask.width=img.width;mask.height=img.height;
+                if(write_features&&!masker.runFeatures(img,fmask)){error=masker.lastError();return false;}
+            }
+            ++mask_done;
+        } else if (search) {
+            // The folder is what makes a view: its pixels are in a different
+            // frame from the last one's, so the tracker starts again there.
+            if (!masker.run(img, mask, nullptr, ids[todo[k]],
+                            write_features ? &fmask : nullptr, cameras[todo[k]])) {
+                error = fmt(lmsg::err_masking_failed_on,
+                            {todo_files[k].filename().string(), masker.lastError()});
+                return false;
+            }
+            // What the model found, as rays, so the views that were skipped can
+            // be filled from them and the next frame's gate knows where he is.
+            if (gate_ok && view_i >= 0) {
+                const app::Pano360View& v = pano_views[(size_t)view_i];
+                // The composed mask keeps everything but the person, so the
+                // person's pixels are the 0 ones.
+                const std::vector<uint8_t> flat(mask.data.begin(), mask.data.end());
+                people.add(app::rays_from_detections(v, flat, mask.width,
+                                                     mask.height, job.mask_ray_stride,
+                                                     false),
+                           gate_dt);
+            }
+        } else if (gate_ok && view_i >= 0) {
+            // Not searched, but he is still here: the tracks are cones and reach
+            // every view that can see him, so training him from the searched
+            // views alone is what leaves ghosts.
+            app::project_tracks(people, pano_views[(size_t)view_i], img.width,
+                                img.height, mask.data, job.mask_ray_stride, 0);
+            mask.width = img.width;
+            mask.height = img.height;
         }
         // Still the way up the model saw it, which is the frame the stencil's
         // shapes were drawn in.
@@ -2746,6 +3205,38 @@ bool DatasetPrep::generate_masks_builtin(const PrepJob& job, const PrepInput& in
         // compiler's evaluation order.
         ++done;
         progress.update(done, done == (int)files.size());
+    }
+    if(bridge_mode && !bin_mode && !todo.empty() && !bridge.finish(error))return false;
+    if (bridge_mode && gopro_coverage < 0 && !bridge_ids.empty()) {
+        error = lmsg::err_gopro_no_coverage.get();
+        return false;
+    }
+    // The frames before the tracking file's first outline are gone, in every
+    // camera folder and with the masks a previous run may have left beside
+    // them -- frames the user never sees masks for would become input.
+    if (bridge_mode && gopro_coverage >= 0 && !gopro_untracked.empty()) {
+        std::error_code rec;
+        int n_images = 0, n_masks = 0;
+        bool failed = false;
+        auto drop = [&](const fs::path& p, int& n) {
+            if (fs::remove(p, rec) && !rec) n++;
+            else if (rec) failed = true;
+            rec.clear();
+        };
+        for (size_t i = 0; i < files.size(); i++) {
+            if (bridge_ids[i] >= gopro_coverage) continue;
+            const fs::path rel = under_root(files[i], image_root);
+            drop(files[i], n_images);
+            const std::string png = rel.stem().string() + ".png";
+            drop(mask_root / rel.parent_path() / png, n_masks);
+            if (!feature_root.empty())
+                drop(feature_root / rel.parent_path() / png, n_masks);
+        }
+        log(fmt(lmsg::gopro_untracked_removed, {n_masks, n_images}), false);
+        if (failed) {
+            error = lmsg::err_gopro_remove_failed.get();
+            return false;
+        }
     }
     // The last few masks are still in the queue; the caller goes straight on to
     // structure from motion, which will look for them.

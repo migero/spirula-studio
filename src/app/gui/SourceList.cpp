@@ -393,14 +393,21 @@ void apply_pano_lens(std::vector<PrepInput>& sources, SfmJob& sfm,
                      ColmapJob& colmap) {
     const app::Pano360Options& p = sfm.prep.pano;
     if (p.mode == app::Pano360Mode::Off) return;
-    const bool faces = p.mode == app::Pano360Mode::Faces;
-    // All ten views share one focal length in PIXELS, and the factor is
-    // resolved against the first image in the tree -- cam0, the view on the
-    // lens axis, which is the 90-degree one this halves (build_manifest).
-    const float focal = faces ? 0.5f : 0.0f;
+    // Corners' views are squares too, so it shares Faces' one focal in pixels:
+    // its cam0 is also a 90-degree view, which is the one this halves.
+    const bool faces = p.mode == app::Pano360Mode::Faces ||
+                       p.mode == app::Pano360Mode::Corners;
+    // A fisheye view is equidistant, 180 degrees across its circle, so its
+    // focal length in pixels is side / pi.
+    const bool fisheye = p.mode == app::Pano360Mode::Fisheye;
+    const float focal = faces   ? 0.5f
+                      : fisheye ? 1.0f / 3.14159265f
+                                : 0.0f;
     for (PrepInput& s : sources) {
         if (!s.pano360.valid()) continue;
-        s.camera_model = faces ? "pinhole" : "equirectangular";
+        s.camera_model = faces   ? "pinhole"
+                       : fisheye ? "opencv-fisheye"
+                                 : "equirectangular";
         s.focal_factor = focal;
         for (SubCamera& sc : s.subcameras) {
             sc.camera_model.clear();
@@ -409,9 +416,10 @@ void apply_pano_lens(std::vector<PrepInput>& sources, SfmJob& sfm,
     }
     if (!sources.empty() && sources[0].pano360.valid())
         sfm.camera_model = sources[0].camera_model;
-    // COLMAP has no spherical model; only the faces can reach that engine.
-    if (faces) {
-        colmap.camera_model = "PINHOLE";
+    // COLMAP has no spherical model; faces and fisheye views are both lenses
+    // it can fit, the fisheye one being its equidistant OPENCV_FISHEYE.
+    if (faces || fisheye) {
+        colmap.camera_model = faces ? "PINHOLE" : "OPENCV_FISHEYE";
         colmap.init_focal_factor = focal;
     }
     normalize_source_lenses(sources, sfm.camera_model);

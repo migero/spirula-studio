@@ -523,6 +523,8 @@ void ColmapRunner::run(ColmapJob job) {
             pj.video_fps = job.video_fps;
             pj.adaptive_fps = job.adaptive_fps;
             pj.adaptive_range = job.adaptive_range;
+            pj.gps_spacing = job.gps_spacing;
+            pj.gps_spacing_m = job.gps_spacing_m;
             pj.sharp_window = job.sharp_window;
             pj.pano = job.pano;
             pj.max_frames = job.max_frames;

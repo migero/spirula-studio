@@ -16,6 +16,9 @@
 #include "nn/Device.h"
 #include "nn/io/Image.h"
 #include "sam/Sam.h"
+#ifdef SS_HAVE_VIDEO
+#include "video/Video.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -230,29 +233,49 @@ bool extract_pair(const FrameExtractJob& o, const FrameExtractSinks& sinks,
                        track.size() > 1 ? track[1].data.data() : nullptr,
                        canvas.data());
         t.convert += nn::now_ms() - t0;
+        pano360_sharpen(canvas.data(), o.eac.canvasW(), o.eac.canvasH(), o.eac,
+                        o.pano_sharpen, 0);
         char stem[64];
         std::snprintf(stem, sizeof(stem), "%05lld", (long long)index);
-        for (size_t i = 0; i < o.views.size(); i++) {
-            t0 = nn::now_ms();
-            WriteJob job;
-            job.image.width = maps[i].width;
-            job.image.height = maps[i].height;
-            job.image.channels = 3;
-            job.image.data.resize((size_t)maps[i].width * maps[i].height * 3);
-            pano360_apply(maps[i], canvas.data(), o.eac.canvasW(), o.eac.canvasH(), 0,
-                          job.image.data.data());
-            t.convert += nn::now_ms() - t0;
-            job.path = (image_dir / o.views[i].dir /
-                        (std::string(stem) + (jpeg ? ".jpg" : ".png"))).string();
-            job.quality = o.quality;
+        const size_t nv = o.views.size();
+        std::vector<WriteJob> jobs(nv);
+        for (size_t i = 0; i < nv; i++) {
+            jobs[i].image.width = maps[i].width;
+            jobs[i].image.height = maps[i].height;
+            jobs[i].image.channels = 3;
+            jobs[i].image.data.resize((size_t)maps[i].width * maps[i].height * 3);
+            jobs[i].path = (image_dir / o.views[i].dir /
+                            (std::string(stem) + (jpeg ? ".jpg" : ".png"))).string();
+            jobs[i].quality = o.quality;
+        }
+        // One canvas, several independent resamples of it: the remap is the
+        // heaviest host cost of a 360 frame, so the views run side by side,
+        // one thread each -- 0 would spawn core-count threads per view here.
+        t0 = nn::now_ms();
+        if (nv > 1) {
+            std::vector<std::thread> th(nv - 1);
+            for (size_t i = 1; i < nv; i++)
+                th[i - 1] = std::thread([&, i] {
+                    pano360_apply(maps[i], canvas.data(), o.eac.canvasW(),
+                                  o.eac.canvasH(), 1, jobs[i].image.data.data());
+                });
+            pano360_apply(maps[0], canvas.data(), o.eac.canvasW(), o.eac.canvasH(),
+                          1, jobs[0].image.data.data());
+            for (std::thread& x : th) x.join();
+        } else {
+            pano360_apply(maps[0], canvas.data(), o.eac.canvasW(), o.eac.canvasH(),
+                          1, jobs[0].image.data.data());
+        }
+        t.convert += nn::now_ms() - t0;
+        for (size_t i = 0; i < nv; i++) {
             // The reel shows the first view; the others are the same instant
             // seen the other way, and six thumbnails a frame is not what the
             // slider is for.
             if (i == 0 && sinks.preview)
-                sinks.preview(job.image.data.data(), job.image.width, job.image.height,
-                              job.path);
+                sinks.preview(jobs[0].image.data.data(), jobs[0].image.width,
+                              jobs[0].image.height, jobs[0].path);
             t0 = nn::now_ms();
-            pool.submit(std::move(job));
+            pool.submit(std::move(jobs[i]));
             t.submit += nn::now_ms() - t0;
             // Per view, not per frame: the count is what the progress bar is
             // scaled against, and a plan writes six files here.
@@ -399,7 +422,37 @@ bool extract_frames(const FrameExtractJob& job_in, const FrameExtractSinks& sink
     // a rig see the same motion, and the ones that do not are still one camera
     // moving through one scene.
     std::vector<int64_t> plan = job.plan;
-    if (job.adaptive && plan.empty()) {
+    if (job.gps_spacing_m > 0 && plan.empty()) {
+        GpsPlanOptions options;
+        options.spacing_m = job.gps_spacing_m;
+        options.start_frame = job.start_frame;
+        options.max_frames = job.max_frames;
+#ifdef SS_HAVE_VIDEO
+        if (dec.builtin) {
+            video::VideoProbe probe;
+            std::string probe_error;
+            if (!video::probe_video(job.input, probe, probe_error)) {
+                error = probe_error;
+                return false;
+            }
+            options.fps = probe.fps;
+            options.frames = probe.frame_count;
+        } else
+#endif
+        {
+            options.fps = dec.facts.fps;
+            options.frames = dec.facts.frames;
+        }
+        GpsPlanResult gps;
+        if (!plan_by_gps(job.input, options, gps,
+                         [&](int64_t at, int64_t of, float distance) {
+                             if (sinks.measured) sinks.measured(at, of, distance);
+                         },
+                         error))
+            return false;
+        plan = std::move(gps.ends);
+        report_plan(sinks, plan, options.frames, options.fps);
+    } else if (job.adaptive && plan.empty()) {
         MotionPlanInput mi;
         if (!measure_motion(job, sinks, dec, tracks[0], (int)tracks.size(), mi, stats,
                             error))

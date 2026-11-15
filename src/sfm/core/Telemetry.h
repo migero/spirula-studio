@@ -66,6 +66,10 @@ struct Telemetry {
     std::vector<TelemetryVec> magnet;       // microtesla
     std::vector<TelemetryVec> gravity;      // unit vector in the sensor frame
     std::vector<TelemetryQuat> orientation; // fused attitude, as the camera wrote it
+    // GoPro's second attitude stream (IORI), kept apart from CORI because the
+    // World Lock composes the two: q(t) = CORI(t) * IORI(t). Empty for files
+    // that carry no such stream.
+    std::vector<TelemetryQuat> initial_orientation;
     // The order of accel-frame components the attitude acts on. GoPro's CORI
     // takes (X, Z, Y) of the ORIN frame: measured, see the note it carries.
     std::string orientation_axes = "XYZ";

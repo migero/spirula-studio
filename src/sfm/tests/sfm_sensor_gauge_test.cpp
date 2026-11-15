@@ -219,6 +219,39 @@ int cmdSensorGaugeTest(int, char**) {
         check(rr.calib_err_deg < 1.0, "T7 extrinsic within 1 deg");
         check(std::fabs(r.groups[0].g_norm - 9.81) < 0.3, "T7 gravity norm");
     }
+    // ---- T8: the fused gravity is cleaner than the specific force -----------
+    // A 2 m/s^2 accelerometer bias is absorbed into the extrinsic only as far
+    // as the votes agree; the camera's own gravity stream is free of it.
+    {
+        Scenario sc;
+        sc.ba = {2.0, 0.0, 0.0};
+        RunResult raw = runScenario(sc);
+        Scenario fused = sc;
+        fused.fused_gravity = true;
+        RunResult rr = runScenario(fused);
+        std::printf("T8 accel bias: up raw=%.3f deg (spread %.2f deg) fused=%.3f deg "
+                    "(spread %.2f deg)\n",
+                    raw.up_err_deg, raw.r.up.spread_deg, rr.up_err_deg, rr.r.up.spread_deg);
+        check(raw.r.up.spread_deg > 3.0, "T8 the specific force votes disagree");
+        check(rr.r.up.spread_deg < 1.0, "T8 fused gravity votes agree");
+        check(rr.up_err_deg < 1.0, "T8 fused gravity keeps the up");
+    }
+    // ---- T9: a scale disagreement keeps the GPS heading and place -----------
+    // The GPS path is 20 percent small, so the IMU wins the scale; the heading
+    // is still the GPS's, and the model still lands on the track.
+    {
+        Scenario sc;
+        sc.gps_scale = 0.8;
+        RunResult rr = runScenario(sc);
+        const SensorGaugeResult& r = rr.r;
+        const double heading_err = angleDeg(r.T.R, rr.M.R);
+        std::printf("T9 scale disagreement: disagree=%d imu=%d gps=%d place=%d heading=%.2f deg\n",
+                    r.disagree, r.scale_from_imu, r.scale_from_gps, r.place_from_gps,
+                    heading_err);
+        check(r.disagree && r.scale_from_imu && !r.scale_from_gps, "T9 IMU wins the scale");
+        check(r.gps.ok && r.place_from_gps, "T9 GPS frame still applied");
+        check(heading_err < 3.0, "T9 heading still the GPS's");
+    }
     std::printf("%s\n", fails ? "FAIL" : "PASS");
     return fails ? 1 : 0;
 }

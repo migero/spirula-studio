@@ -177,6 +177,7 @@ ColmapPoints3D read_points3D_binary(const std::string& recon_dir) {
     uint64_t n = r.read<uint64_t>();
     pts.xyz.reserve(n * 3);
     pts.rgb.reserve(n * 3);
+    pts.trackless.reserve(n);
     for (uint64_t i = 0; i < n; i++) {
         r.skip(sizeof(uint64_t));                       // point3D_id
         for (int k = 0; k < 3; k++) pts.xyz.push_back(r.read<double>());
@@ -184,6 +185,9 @@ ColmapPoints3D read_points3D_binary(const std::string& recon_dir) {
         r.skip(sizeof(double));                         // reprojection error
         uint64_t track_len = r.read<uint64_t>();
         r.skip(track_len * 2 * sizeof(int32_t));        // (image_id, point2D_idx)
+        // No image saw this one, so it was not triangulated: the sky dome's
+        // points are written this way.
+        pts.trackless.push_back(track_len == 0 ? 1 : 0);
     }
     return pts;
 }
@@ -300,7 +304,9 @@ ColmapPoints3D read_points3D_text(const std::string& recon_dir) {
         fast_strtol(s, &p);                  // point3D_id
         for (int k = 0; k < 3; k++) pts.xyz.push_back(fast_strtod(p, &p));
         for (int k = 0; k < 3; k++) pts.rgb.push_back((uint8_t)fast_strtol(p, &p));
-        // reprojection error + track: rest of line, skipped
+        fast_strtod(p, &p);                  // reprojection error
+        // An empty track is the sky dome's, as in the binary reader.
+        pts.trackless.push_back(p >= e ? 1 : 0);
     }
     return pts;
 }

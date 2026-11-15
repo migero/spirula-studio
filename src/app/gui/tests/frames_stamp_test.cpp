@@ -50,9 +50,24 @@ int main() {
     moves("unwrap mode", [](gui::PrepJob& j) {
         j.pano.mode = app::Pano360Mode::Equirect;
     });
+    moves("fisheye unwrap", [](gui::PrepJob& j) {
+        j.pano.mode = app::Pano360Mode::Fisheye;
+    });
+    // Both new unwrappings must stamp apart from each other and from Faces, or
+    // a re-run on the wrong one reuses frames it should have re-cut.
+    expect(!gui::recon_stamp_change(
+               gui::frames_stamp([&] { gui::PrepJob j = two_clips();
+                                        j.pano.mode = app::Pano360Mode::Faces;
+                                        return j; }()),
+               gui::frames_stamp([&] { gui::PrepJob j = two_clips();
+                                        j.pano.mode = app::Pano360Mode::Corners;
+                                        return j; }())).empty(),
+           "corners and faces stamp differently");
     moves("orientation", [](gui::PrepJob& j) { j.pano.roll = 180.0f; });
+    moves("sharpen", [](gui::PrepJob& j) { j.pano.sharpen = 60; });
     moves("rate", [](gui::PrepJob& j) { j.video_fps = 4.0f; });
     moves("per-video rate", [](gui::PrepJob& j) { j.inputs[1].fps = 6.0f; });
+    moves("per-video start", [](gui::PrepJob& j) { j.inputs[1].start = 3.0f; });
     moves("adaptive switch", [](gui::PrepJob& j) { j.adaptive_fps = true; });
     moves("sharpness window", [](gui::PrepJob& j) { j.sharp_window = 5; });
     moves("input list", [](gui::PrepJob& j) { j.inputs.pop_back(); });

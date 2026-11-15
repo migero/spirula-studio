@@ -23,11 +23,14 @@ namespace app {
 struct SelectClock {
     // A fixed rate is arithmetic on the index; `ends`, from the motion pass,
     // is the frame each window closes at. Both are walked forward only.
+    // `from` (FrameExtractJob::start_frame) undecides candidates before it.
     int keep = 0, skip = 1;
     std::vector<int64_t> ends;
     size_t next = 0;
+    int64_t from = 0;
 
     bool candidate(int64_t i) {
+        if (i < from) return false;
         if (!ends.empty()) {
             while (next < ends.size() && ends[next] < i) ++next;
             return next < ends.size() && i > ends[next] - std::max(keep, 1) &&

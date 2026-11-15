@@ -680,41 +680,65 @@ SS_MSG(xh_360_section,
 
 SS_MSG(xh_360,
     EN("what a GoPro MAX .360 becomes: faces (ten seam-free perspective views, "
-       "five per lens), equirect (one 2:1 panorama) or off (the raw tracks). "
-       "Default: faces"),
+       "five per lens), corners (four square views per lens, none on the axis), "
+       "equirect (one 2:1 panorama), fisheye (two squares, one 180-degree "
+       "equidistant view per lens) or off (the raw tracks). Default: faces"),
     JA("GoPro MAX の .360 の変換先: faces（継ぎ目のない透視ビュー 10 枚、レンズ"
-       "ごとに 5 枚）、equirect（2:1 のパノラマ 1 枚）、off（生のトラック）。既定は "
-       "faces"),
+       "ごとに 5 枚）、corners（レンズごとに正方形のビュー 4 枚、軸上没有）、"
+       "equirect（2:1 のパノラマ 1 枚）、fisheye（レンズごとに 180 度の魚眼ビュー "
+       "1 枚、正方形 2 枚）、off（生のトラック）。既定は faces"),
     ZH_HANS("GoPro MAX .360 的展开方式：faces（十个无拼缝透视视角，每镜头五个）、"
-            "equirect（一张 2:1 全景）或 off（原始轨道）。默认 faces"),
+            "corners（每镜头四个方形视角，轴上没有）、equirect（一张 2:1 全景）、"
+            "fisheye（每镜头一张 180 度鱼眼视角，两个方形）"
+            "或 off（原始轨道）。默认：faces"),
     ZH_HANT("GoPro MAX .360 的展開方式：faces（十個無拼縫透視視角，每鏡頭五個）、"
-            "equirect（一張 2:1 全景）或 off（原始軌道）。預設 faces"),
+            "corners（每鏡頭四個方形視角，軸上沒有）、equirect（一張 2:1 全景）、"
+            "fisheye（每鏡頭一張 180 度魚眼視角，兩個方形）"
+            "或 off（原始軌道）。預設：faces"),
     KO("GoPro MAX .360을 무엇으로 바꿀지: faces(이음매 없는 원근 뷰 10장, 렌즈당 "
-       "5장), equirect(2:1 파노라마 1장), off(원본 트랙). 기본값 faces"),
+       "5장), corners(렌즈당 정사각형 뷰 4장, 축 위에는 없음), equirect(2:1 "
+       "파노라마 한 장), fisheye(렌즈당 180도 등거리 어안 뷰 한 장, 정사각형 두 장) "
+       "또는 off(원본 트랙). 기본값: faces"),
     DE("wozu eine GoPro-MAX-.360 wird: faces (zehn nahtfreie perspektivische "
-       "Ansichten, fünf je Objektiv), equirect (ein 2:1-Panorama) oder off (die "
-       "rohen Spuren). Vorgabe: faces"),
+       "Ansichten, fünf je Objektiv), corners (vier quadratische Ansichten je "
+       "Objektiv, keine auf der Optikachse), equirect (ein 2:1-Panorama), fisheye "
+       "(zwei Quadrate, eine 180-Grad-äquidistante Ansicht je Objektiv) oder "
+       "off (die rohen Tracks). Standard: faces"),
     FR("ce que devient un .360 GoPro MAX : faces (dix vues en perspective sans "
-       "couture, cinq par objectif), equirect (un panorama 2:1) ou off (les "
-       "pistes brutes). Défaut : faces"),
+       "couture, cinq par objectif), corners (quatre vues carrées par objectif, "
+       "aucune sur l'axe), equirect (un panorama 2:1), fisheye (deux carrés, une "
+       "vue équidistante de 180 degrés par objectif) ou off (les pistes "
+       "brutes). Défaut : faces"),
     ES("en qué se convierte un .360 de GoPro MAX: faces (diez vistas en "
-       "perspectiva sin costuras, cinco por objetivo), equirect (un panorama "
-       "2:1) u off (las pistas en bruto). Por defecto: faces"),
+       "perspectiva sin costura, cinco por objetivo), corners (cuatro vistas "
+       "cuadradas por objetivo, ninguna sobre el eje), equirect (un panorama "
+       "2:1), fisheye (dos cuadrados, una vista equidistante de 180 grados por "
+       "objetivo) o off (las pistas en bruto). Por defecto: faces"),
     PT("no que um .360 da GoPro MAX se torna: faces (dez vistas em perspectiva "
-       "sem emendas, cinco por lente), equirect (um panorama 2:1) ou off (as "
-       "faixas brutas). Padrão: faces"),
+       "sem emenda, cinco por lente), corners (quatro vistas quadradas por "
+       "lente, nenhuma sobre o eixo), equirect (um panorama 2:1), fisheye (dois "
+       "quadrados, uma vista equidistante de 180 graus por lente) ou off (as "
+       "faixas em bruto). Predefinição: faces"),
     IT("in che cosa diventa un .360 GoPro MAX: faces (dieci viste prospettiche "
-       "senza cuciture, cinque per obiettivo), equirect (un panorama 2:1) "
-       "oppure off (le tracce grezze). Predefinito: faces"),
+       "senza cucitura, cinque per obiettivo), corners (quattro viste quadrate "
+       "per obiettivo, nessuna sull'asse), equirect (un panorama 2:1), fisheye "
+       "(due quadrati, una vista equidistante di 180 gradi per obiettivo) o off "
+       "(le tracce grezze). Predefinito: faces"),
     NL("wat een GoPro MAX-.360 wordt: faces (tien naadloze perspectiefaanzichten, "
-       "vijf per lens), equirect (één 2:1-panorama) of off (de ruwe sporen). "
+       "vijf per lens), corners (vier vierkante aanzichten per lens, geen op de "
+       "as), equirect (één 2:1-panorama), fisheye (twee vierkanten, één "
+       "180-graden equidistant aanzicht per lens) of off (de ruwe tracks). "
        "Standaard: faces"),
     RU("во что превращается .360 с GoPro MAX: faces (десять перспективных видов "
-       "без швов, по пять на объектив), equirect (одна панорама 2:1) или off "
-       "(исходные дорожки). По умолчанию: faces"),
+       "без шва, по пять на объектив), corners (по четыре квадратных вида на "
+       "объектив, ни одного на оптической оси), equirect (одна панорама 2:1), "
+       "fisheye (два квадрата, по одному равнопромежуточному виду на 180 градусов "
+       "на объектив) или off (исходные дорожки). По умолчанию: faces"),
     TR("GoPro MAX .360 dosyasının neye dönüşeceği: faces (dikişsiz on perspektif "
-       "görünüm, objektif başına beş), equirect (tek 2:1 panorama) veya off (ham "
-       "izler). Varsayılan: faces"));
+       "görünüm, lens başına beş), corners (lens başına dört kare görünüm, eksen "
+       "üzerinde hiçbiri), equirect (tek 2:1 panorama), fisheye (iki kare, lens "
+       "başına 180 derecelik eş uzaklıklı bir görünüm) ya da off (ham izler). "
+       "Varsayılan: faces"));
 
 SS_MSG(xh_360_size,
     EN("pixels a side for each face, or the width of the equirectangular "
@@ -739,6 +763,22 @@ SS_MSG(xh_360_size,
        "изображения; по умолчанию — из источника"),
     TR("her görünümün kenar piksel sayısı ya da eş dikdörtgen görüntünün "
        "genişliği; varsayılan kaynaktan alınır"));
+
+SS_MSG(xh_360_sharpen,
+    EN("sharpen the canvas before the views are cut, 0-100; default 0"),
+    JA("ビューに分割する前にキャンバスを鮮鋭化します（0-100、既定 0）"),
+    ZH_HANS("在切成视角前锐化画布，0-100，默认 0"),
+    ZH_HANT("在切成視角前銳化畫布，0-100，預設 0"),
+    KO("뷰로 자르기 전에 캔버스를 선명하게 합니다(0-100, 기본값 0)"),
+    DE("die Fläche vor dem Schnitt in Ansichten schärfen, 0-100; Vorgabe 0"),
+    FR("nettifier la surface avant la découpe en vues, 0-100 ; par défaut 0"),
+    ES("enfocar el lienzo antes de cortarlo en vistas, 0-100; por defecto 0"),
+    PT("nitidez no quadro antes de o cortar em vistas, 0-100; padrão 0"),
+    IT("nitidizza la superficie prima del taglio in viste, 0-100; predefinito 0"),
+    NL("het beeld scherpen voordat het in aanzichten wordt gesneden, 0-100; "
+       "standaard 0"),
+    RU("повысить резкость кадра до нарезки на виды, 0-100; по умолчанию 0"),
+    TR("kareyi görünümlere bölmeden önce keskinleştirir, 0-100; varsayılan 0"));
 
 SS_MSG(xh_360_orient,
     EN("how the camera was held: yaw,pitch,roll in degrees, applied to the "
@@ -810,6 +850,24 @@ SS_MSG(xh_skip,
     NL("elke n bronbeelden één beeld schrijven (standaard 1)"),
     RU("записывать один кадр из каждых n исходных (по умолчанию 1)"),
     TR("her n kaynak karede bir kare yaz (varsayılan 1)"));
+
+SS_MSG(xh_start,
+    EN("skip the video's first n seconds; the extraction never writes them"),
+    JA("動画の最初の n 秒をスキップします。その部分のフレームは書き出されません"),
+    ZH_HANS("跳过视频开头 n 秒；这部分帧不会被写出"),
+    ZH_HANT("跳過影片開頭 n 秒；這些影格不會被寫出"),
+    KO("동영상의 처음 n초를 건너뜁니다. 그 구간의 프레임은 쓰지 않습니다"),
+    DE("die ersten n Sekunden des Videos überspringen; sie werden nie "
+       "geschrieben"),
+    FR("passer les n premières secondes de la vidéo ; elles ne sont jamais "
+       "écrites"),
+    ES("saltarse los primeros n segundos del vídeo; nunca se escriben"),
+    PT("saltar os primeiros n segundos do vídeo; nunca são escritos"),
+    IT("salta i primi n secondi del video; non vengono mai scritti"),
+    NL("de eerste n seconden van de video overslaan; zij worden nooit "
+       "geschreven"),
+    RU("пропустить первые n секунд видео; они не записываются"),
+    TR("videonun ilk n saniyesini atla; bunlar hiç yazılmaz"));
 
 SS_MSG(xh_keep,
     EN("choose the sharpest of the last n frames; -1 = round(skip/2) (default), "

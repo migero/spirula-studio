@@ -4,11 +4,11 @@
 // out of it.
 //
 // One place owns the geometry: what a GoPro's two tracks hold, the plan that
-// turns it into equirectangular or a ring of pinhole faces, and the resampler
-// both decode paths apply. ffmpeg is asked only to decode and to cut the
-// tracks up; its own `v360=eac` insets every face by 2 px, which puts a 4 px
-// step across the seam between the two tracks. docs/datasets.md records where
-// the layout numbers were measured.
+// turns it into equirectangular, a ring of pinhole faces or two fisheyes, and
+// the resampler both decode paths apply. ffmpeg is asked only to decode and to
+// cut the tracks up; its own `v360=eac` insets every face by 2 px, which puts a
+// 4 px step across the seam between the two tracks. docs/datasets.md records
+// where the layout numbers were measured.
 
 #include <cstdint>
 #include <string>
@@ -70,29 +70,38 @@ std::vector<Eac360Slice> eac360_slices(const Pano360Layout& l);
 bool pano360_direction(const Pano360Layout& l, int row, float x, float y,
                        float dir[3]);
 
-enum class Pano360Mode { Off, Faces, Equirect };
+enum class Pano360Mode { Off, Faces, Equirect, Corners, Fisheye };
 
 struct Pano360Options {
     Pano360Mode mode = Pano360Mode::Off;
     int   size = 0;         // face side, or equirect width; 0 = from the layout
+    // Unsharp mask on the canvas before the views are resampled, 0..100.
+    // pano360_sharpen does the work; 0 leaves every pixel alone.
+    int   sharpen = 0;
     // How the camera was held, degrees. Applied to the whole sphere, so a
     // 180 roll turns an inverted mount's views the right way up.
     float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
 };
 
+// How a view's pixels carry directions. Fisheye is equidistant: theta = r/R of
+// the view's half `fov`, R being half its side, so a 180 degree `fov` puts the
+// circle exactly inside the square and leaves its corners outside the lens.
+enum class Pano360Projection { Equirect, Pinhole, Fisheye };
+
 // One image per frame. The camera frame is x right, y down, z forward, `rot`
-// maps a view-space ray into it, and `fov` is the HORIZONTAL one -- a view
-// narrower than it is wide is half a cube face, not a cropped one.
+// maps a view-space ray into it, and `fov` is the HORIZONTAL one -- except
+// Fisheye, where it is the circle's diameter, and Equirect, which stores 0.
 struct Pano360View {
     std::string dir;        // "cam0"...; empty when the plan makes one image
     int   width = 0, height = 0;
-    float fov = 0.0f;       // 0 = equirectangular
+    Pano360Projection proj = Pano360Projection::Equirect;
+    float fov = 0.0f;       // degrees
     float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // row major
 };
 
-// Faces over an EAC packing gives five views per lens -- the face on its axis
-// and the near half of its four sides -- so every view is fed by ONE lens
-// (docs/datasets.md). A panorama is stitched already, so it gets a cube of six.
+// Faces: five views per lens over an EAC packing -- the face on its axis and
+// the near half of its four sides, so each view is fed by ONE lens; a panorama
+// gets a cube of six. Fisheye: two squares, one per lens, the whole 180 circle.
 std::vector<Pano360View> pano360_views(const Pano360Layout& l,
                                        const Pano360Options& o);
 
@@ -100,7 +109,8 @@ std::vector<Pano360View> pano360_views(const Pano360Layout& l,
 int pano360_default_size(const Pano360Layout& l, const Pano360Options& o);
 
 // Where each output pixel reads from the canvas. Built once per view and
-// reused for every frame; ~8 bytes a pixel.
+// reused for every frame; ~8 bytes a pixel. A pixel outside the projection --
+// a fisheye view's corners -- carries -1 in both, which pano360_apply zeroes.
 struct Pano360Remap {
     int width = 0, height = 0;
     std::vector<float> x, y;
@@ -112,6 +122,22 @@ void pano360_remap(const Pano360Layout& l, const Pano360View& v,
 // canvas. `threads` <= 0 uses every core.
 void pano360_apply(const Pano360Remap& m, const uint8_t* canvas, int canvas_w,
                    int canvas_h, int threads, uint8_t* out);
+
+// Unsharp mask over the RGB canvas, before the views are resampled: one pass
+// per frame instead of one per view. `amount` is 0..100, mapped to 0..4x; EAC
+// faces and the lens seam are tiled apart so no tap crosses a discontinuity.
+void pano360_sharpen(uint8_t* canvas, int canvas_w, int canvas_h,
+                     const Pano360Layout& l, int amount, int threads);
+
+// Ray space: a view's pixels and the sphere they look at, both ways. The
+// inverse pair of pano360_remap's per-pixel step, so a ray from a pixel in one
+// view and the pixel it maps to in another agree. docs/datasets.md, "Ray space".
+void pano360_view_ray(const Pano360View& v, float x, float y, float dir[3]);
+
+// Where a unit sphere direction lands in `v`, as a pixel centre. False where it
+// is behind `v` or outside it, so a caller iterating rays skips those rather
+// than wrapping them onto the far edge.
+bool pano360_ray_pixel(const Pano360View& v, const float dir[3], float& x, float& y);
 
 // The frames laid out as one canvas, tightly packed RGB. `track1` is read only
 // where the packing spreads the sphere over both; a panorama pair holds the

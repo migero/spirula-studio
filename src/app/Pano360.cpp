@@ -214,6 +214,7 @@ int pano360_default_size(const Pano360Layout& l, const Pano360Options& o) {
     // rectilinear face would need 4/pi to hold the density at its centre and
     // spends the extra on its corners; 1.125 splits the difference.
     if (o.mode == Pano360Mode::Equirect) return 4 * l.face;
+    if (o.mode == Pano360Mode::Fisheye) return l.face;
     return 32 * (int)std::lround(l.face * 1.125 / 32.0);
 }
 
@@ -230,6 +231,25 @@ std::vector<Pano360View> pano360_views(const Pano360Layout& l,
         v.fov = 0.0f;
         std::memcpy(v.rot, base.m, sizeof v.rot);
         views.push_back(std::move(v));
+        return views;
+    }
+
+    if (o.mode == Pano360Mode::Fisheye) {
+        // Equidistant, so f = side/pi is what puts the 180 degree circle exactly
+        // inside the square; its corners lie outside the lens and resample black.
+        const int side = o.size > 0 ? o.size : pano360_default_size(l, o);
+        for (int lens = 0; lens < 2; lens++) {
+            Pano360View v;
+            v.dir = "cam" + std::to_string(lens);
+            v.width = v.height = side;
+            v.proj = Pano360Projection::Fisheye;
+            v.fov = 180.0f;
+            const Mat3 axis = lens == 0 ? Mat3{{1, 0, 0, 0, 1, 0, 0, 0, 1}}
+                                        : rotY(rad(180.0));
+            const Mat3 m = mul(base, axis);
+            std::memcpy(v.rot, m.m, sizeof v.rot);
+            views.push_back(std::move(v));
+        }
         return views;
     }
 
@@ -257,6 +277,7 @@ std::vector<Pano360View> pano360_views(const Pano360Layout& l,
             Pano360View v;
             v.dir = "cam" + std::to_string(views.size());
             v.width = v.height = side;
+            v.proj = Pano360Projection::Pinhole;
             // Wider than the 90 a cube face needs, so neighbours share the
             // features along their edge rather than meeting exactly on it.
             v.fov = 100.0f;
@@ -266,6 +287,30 @@ std::vector<Pano360View> pano360_views(const Pano360Layout& l,
         }
         return views;
     }
+    // Corners: four squares per lens, none on the axis. 45 degrees off it is
+    // what puts a square's inner edge on the axis and its outer edge and both
+    // corners exactly on the 90 degree seam; 95 degrees would cross by 2.5.
+    if (o.mode == Pano360Mode::Corners) {
+        auto square = [&](const Mat3& r) {
+            Pano360View v;
+            v.dir = "cam" + std::to_string(views.size());
+            v.width = v.height = side;
+            v.proj = Pano360Projection::Pinhole;
+            v.fov = 90.0f;
+            const Mat3 f = mul(base, r);
+            std::memcpy(v.rot, f.m, sizeof v.rot);
+            views.push_back(std::move(v));
+        };
+        for (int lens = 0; lens < 2; lens++) {
+            const Mat3 axis = lens == 0 ? Mat3{{1, 0, 0, 0, 1, 0, 0, 0, 1}}
+                                         : rotY(rad(180.0));
+            const Mat3 tilt[4] = {rotY(rad(45.0)), rotX(rad(-45.0)),
+                                  rotY(rad(-45.0)), rotX(rad(45.0))};
+            for (const Mat3& t : tilt) square(mul(axis, t));
+        }
+        return views;
+    }
+
     const double focal = side * 0.5;
     // Half of a side face is 45 of its 90 degrees. Rounded DOWN and to an even
     // count, so a bilinear tap at the outer edge cannot reach past the seam
@@ -282,6 +327,7 @@ std::vector<Pano360View> pano360_views(const Pano360Layout& l,
         v.dir = "cam" + std::to_string(views.size());
         v.width = w;
         v.height = h;
+        v.proj = Pano360Projection::Pinhole;
         v.fov = (float)(2.0 * std::atan(w * 0.5 / focal) * 180.0 / kPi);
         const Mat3 f = mul(base, r);
         std::memcpy(v.rot, f.m, sizeof v.rot);
@@ -314,23 +360,39 @@ void pano360_remap(const Pano360Layout& l, const Pano360View& v,
     const Mat3 r{{v.rot[0], v.rot[1], v.rot[2], v.rot[3], v.rot[4], v.rot[5],
                   v.rot[6], v.rot[7], v.rot[8]}};
     const float face = (float)l.face;
-    const double focal = v.fov > 0.0f
-                             ? (v.width * 0.5) / std::tan(rad(v.fov) * 0.5)
-                             : 0.0;
+    const double half_fov = rad(v.fov) * 0.5;
+    const double radius = v.width * 0.5;
 
     for (int j = 0; j < v.height; j++) {
         for (int i = 0; i < v.width; i++) {
             float dx, dy, dz;
-            if (v.fov > 0.0f) {
+            if (v.proj == Pano360Projection::Pinhole) {
+                const double focal = radius / std::tan(half_fov);
                 dx = (float)(i + 0.5 - v.width * 0.5);
                 dy = (float)(j + 0.5 - v.height * 0.5);
                 dz = (float)focal;
-            } else {
+            } else if (v.proj == Pano360Projection::Equirect) {
                 const double phi = (2.0 * (i + 0.5) / v.width - 1.0) * kPi;
                 const double th = (2.0 * (j + 0.5) / v.height - 1.0) * kPi / 2;
                 dx = (float)(std::cos(th) * std::sin(phi));
                 dy = (float)std::sin(th);
                 dz = (float)(std::cos(th) * std::cos(phi));
+            } else {
+                // Equidistant, so the pixel's distance from the centre is its
+                // angle and radius 1 is the lens's whole field.
+                const double cx = (i + 0.5 - radius) / radius;
+                const double cy = (j + 0.5 - v.height * 0.5) / radius;
+                const double rp = std::sqrt(cx * cx + cy * cy);
+                if (rp > 1.0) {
+                    const size_t k = (size_t)j * v.width + i;
+                    out.x[k] = out.y[k] = -1.0f;
+                    continue;
+                }
+                const double th = rp * half_fov;
+                const double s = rp > 0.0 ? std::sin(th) / rp : 0.0;
+                dx = (float)(s * cx);
+                dy = (float)(s * cy);
+                dz = (float)std::cos(th);
             }
             const float x = r(0, 0) * dx + r(0, 1) * dy + r(0, 2) * dz;
             const float y = r(1, 0) * dx + r(1, 1) * dy + r(1, 2) * dz;
@@ -370,6 +432,84 @@ void pano360_remap(const Pano360Layout& l, const Pano360View& v,
     }
 }
 
+void pano360_view_ray(const Pano360View& v, float x, float y, float dir[3]) {
+    const Mat3 r{{v.rot[0], v.rot[1], v.rot[2], v.rot[3], v.rot[4], v.rot[5],
+                  v.rot[6], v.rot[7], v.rot[8]}};
+    const double half_fov = rad(v.fov) * 0.5;
+    const double radius = v.width * 0.5;
+    float dx, dy, dz;
+    if (v.proj == Pano360Projection::Pinhole) {
+        const double focal = radius / std::tan(half_fov);
+        dx = x + 0.5f - v.width * 0.5f;
+        dy = y + 0.5f - v.height * 0.5f;
+        dz = (float)focal;
+    } else if (v.proj == Pano360Projection::Equirect) {
+        const double phi = (2.0 * (x + 0.5) / v.width - 1.0) * kPi;
+        const double th = (2.0 * (y + 0.5) / v.height - 1.0) * kPi / 2;
+        dx = (float)(std::cos(th) * std::sin(phi));
+        dy = (float)std::sin(th);
+        dz = (float)(std::cos(th) * std::cos(phi));
+    } else {
+        const double cx = (x + 0.5 - radius) / radius;
+        const double cy = (y + 0.5 - v.height * 0.5) / radius;
+        const double rp = std::sqrt(cx * cx + cy * cy);
+        const double th = rp * half_fov;
+        const double s = rp > 0.0 ? std::sin(th) / rp : 0.0;
+        dx = (float)(s * cx);
+        dy = (float)(s * cy);
+        dz = (float)std::cos(th);
+    }
+    dir[0] = r(0, 0) * dx + r(0, 1) * dy + r(0, 2) * dz;
+    dir[1] = r(1, 0) * dx + r(1, 1) * dy + r(1, 2) * dz;
+    dir[2] = r(2, 0) * dx + r(2, 1) * dy + r(2, 2) * dz;
+    const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (n > 0.0f) { dir[0] /= n; dir[1] /= n; dir[2] /= n; }
+}
+
+bool pano360_ray_pixel(const Pano360View& v, const float dir[3], float& x, float& y) {
+    const Mat3 r{{v.rot[0], v.rot[1], v.rot[2], v.rot[3], v.rot[4], v.rot[5],
+                  v.rot[6], v.rot[7], v.rot[8]}};
+    // The transpose puts the sphere direction back into the view's own frame.
+    const float dx = r(0, 0) * dir[0] + r(1, 0) * dir[1] + r(2, 0) * dir[2];
+    const float dy = r(0, 1) * dir[0] + r(1, 1) * dir[1] + r(2, 1) * dir[2];
+    const float dz = r(0, 2) * dir[0] + r(1, 2) * dir[1] + r(2, 2) * dir[2];
+    if (v.proj == Pano360Projection::Pinhole) {
+        if (dz <= 1e-6f) return false;
+        const double focal = (v.width * 0.5) / std::tan(rad(v.fov) * 0.5);
+        x = dx / dz * (float)focal + v.width * 0.5f - 0.5f;
+        y = dy / dz * (float)focal + v.height * 0.5f - 0.5f;
+        // The rectangle, not the unit square: a side view is 94.5 degrees wide,
+        // so |x/focal| reaches tan(47.3) and a bound of 1 would reject its own
+        // corners. Half a pixel of slack, for the rounding at an edge.
+        return x >= -0.5f && y >= -0.5f &&
+               x <= v.width - 0.5f && y <= v.height - 0.5f;
+    }
+    if (v.proj == Pano360Projection::Fisheye) {
+        const double half_fov = rad(v.fov) * 0.5;
+        const float n = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (n <= 0.0f) return false;
+        const double th = std::acos(std::min(1.0, std::max(-1.0, (double)dz / n)));
+        // Past the circle is outside the lens, which is where the square's
+        // corners are.
+        if (th > half_fov + 1e-5) return false;
+        const double rr = th / half_fov, radius = v.width * 0.5;
+        const double h = std::sqrt((double)dx * dx + (double)dy * dy);
+        const double ux = h > 0.0 ? dx / h : 0.0;
+        const double uy = h > 0.0 ? dy / h : 0.0;
+        x = (float)(rr * radius * ux + v.width * 0.5 - 0.5);
+        y = (float)(rr * radius * uy + v.height * 0.5 - 0.5);
+        return x >= -0.5f && y >= -0.5f &&
+               x <= v.width - 0.5f && y <= v.height - 0.5f;
+    }
+    const float n = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (n <= 0.0f) return false;
+    const double phi = std::atan2((double)dx, (double)dz);
+    const double th = std::asin(std::min(1.0, std::max(-1.0, (double)dy / n)));
+    x = (float)((phi / kPi + 1.0) * 0.5 * v.width - 0.5);
+    y = (float)((th / (kPi * 0.5) + 1.0) * 0.5 * v.height - 0.5);
+    return true;
+}
+
 void pano360_apply(const Pano360Remap& m, const uint8_t* canvas, int canvas_w,
                    int canvas_h, int threads, uint8_t* out) {
     if (threads <= 0)
@@ -381,6 +521,13 @@ void pano360_apply(const Pano360Remap& m, const uint8_t* canvas, int canvas_w,
             for (int i = 0; i < m.width; i++) {
                 const size_t k = (size_t)j * m.width + i;
                 const float fx = m.x[k], fy = m.y[k];
+                uint8_t* d = out + k * 3;
+                // The canvas is never negative, so -1 marks a pixel outside the
+                // projection and it stays black.
+                if (fx < 0.0f || fy < 0.0f) {
+                    d[0] = d[1] = d[2] = 0;
+                    continue;
+                }
                 const int x0 = std::min((int)fx, canvas_w - 1);
                 const int y0i = std::min((int)fy, canvas_h - 1);
                 const int x1 = std::min(x0 + 1, canvas_w - 1);
@@ -390,7 +537,6 @@ void pano360_apply(const Pano360Remap& m, const uint8_t* canvas, int canvas_w,
                 const uint8_t* p01 = canvas + ((size_t)y0i * canvas_w + x1) * 3;
                 const uint8_t* p10 = canvas + ((size_t)y1i * canvas_w + x0) * 3;
                 const uint8_t* p11 = canvas + ((size_t)y1i * canvas_w + x1) * 3;
-                uint8_t* d = out + k * 3;
                 for (int c = 0; c < 3; c++) {
                     const float top = p00[c] + (p01[c] - p00[c]) * ax;
                     const float bot = p10[c] + (p11[c] - p10[c]) * ax;
@@ -409,6 +555,91 @@ void pano360_apply(const Pano360Remap& m, const uint8_t* canvas, int canvas_w,
     const int span = (m.height + threads - 1) / threads;
     for (int t = 0; t < threads; t++) {
         const int y0 = t * span, y1 = std::min(m.height, y0 + span);
+        if (y0 >= y1) break;
+        pool.emplace_back(rows, y0, y1);
+    }
+    for (std::thread& t : pool) t.join();
+}
+
+void pano360_sharpen(uint8_t* canvas, int canvas_w, int canvas_h,
+                     const Pano360Layout& l, int amount, int threads) {
+    const bool sphere = l.sphere();
+    if (!canvas || amount <= 0 || canvas_w < 3 || canvas_h < 3) return;
+    if (!sphere && l.face <= 0) return;
+    const float strength = 4.0f * std::min(amount, 100) / 100.0f;
+    const float limit = 0.32f * 255.0f;   // the reference shader's clamp
+
+    // One tile per cube face and per side of the lens seam, so a tap cannot
+    // pull a bright pixel across a discontinuity into a halo.
+    std::vector<int> left, right, row0, row1;
+    if (!sphere) {
+        const int half = std::max(1, l.face / 2);
+        const std::vector<int> cuts = {0, half, l.face, 2 * l.face,
+                                       2 * l.face + half, 3 * l.face};
+        left.resize(canvas_w);
+        right.resize(canvas_w);
+        size_t t = 1;
+        for (int x = 0; x < canvas_w; x++) {
+            while (t + 1 < cuts.size() && x >= cuts[t]) t++;
+            const int x0 = cuts[t - 1], x1 = std::min(cuts[t], canvas_w);
+            left[x] = std::max(x - 1, x0);
+            right[x] = std::min(x + 1, x1 - 1);
+        }
+        row0.resize(canvas_h);
+        row1.resize(canvas_h);
+        for (int y = 0; y < canvas_h; y++) {
+            row0[y] = y < l.face ? 0 : l.face;
+            row1[y] = y < l.face ? std::min(l.face, canvas_h) : canvas_h;
+        }
+    }
+
+    // The row being written is read again by its neighbour, so the source has
+    // to stay intact for the whole pass.
+    const std::vector<uint8_t> src(canvas,
+                                   canvas + (size_t)canvas_w * canvas_h * 3);
+    auto lum = [](const uint8_t* p) {
+        return 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
+    };
+
+    auto rows = [&](int y0, int y1) {
+        for (int y = y0; y < y1; y++) {
+            const int ym = sphere ? std::max(y - 1, 0)
+                                  : std::max(y - 1, row0[y]);
+            const int yp = sphere ? std::min(y + 1, canvas_h - 1)
+                                  : std::min(y + 1, row1[y] - 1);
+            const uint8_t* srow = src.data() + (size_t)y * canvas_w * 3;
+            const uint8_t* um = src.data() + (size_t)ym * canvas_w * 3;
+            const uint8_t* up = src.data() + (size_t)yp * canvas_w * 3;
+            uint8_t* drow = canvas + (size_t)y * canvas_w * 3;
+            for (int x = 0; x < canvas_w; x++) {
+                const int xm = sphere ? (x > 0 ? x - 1 : canvas_w - 1) : left[x];
+                const int xp = sphere ? (x + 1 < canvas_w ? x + 1 : 0) : right[x];
+                const float c = lum(srow + (size_t)x * 3);
+                const float blur = 0.25f * (lum(srow + (size_t)xm * 3) +
+                                            lum(srow + (size_t)xp * 3) +
+                                            lum(um + (size_t)x * 3) +
+                                            lum(up + (size_t)x * 3));
+                const float detail = std::clamp((c - blur) * strength, -limit, limit);
+                uint8_t* d = drow + (size_t)x * 3;
+                for (int k = 0; k < 3; k++)
+                    d[k] = (uint8_t)std::clamp(
+                        srow[(size_t)x * 3 + k] + detail + 0.5f, 0.0f, 255.0f);
+            }
+        }
+    };
+
+    if (threads <= 0)
+        threads = std::max(1, (int)std::thread::hardware_concurrency());
+    threads = std::min(threads, std::max(1, canvas_h));
+    if (threads == 1) {
+        rows(0, canvas_h);
+        return;
+    }
+    std::vector<std::thread> pool;
+    pool.reserve(threads);
+    const int span = (canvas_h + threads - 1) / threads;
+    for (int t = 0; t < threads; t++) {
+        const int y0 = t * span, y1 = std::min(canvas_h, y0 + span);
         if (y0 >= y1) break;
         pool.emplace_back(rows, y0, y1);
     }

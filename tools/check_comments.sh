@@ -40,7 +40,7 @@ paths=(':!src/external/' ':!src/generated/' ':!src/instantiations/'
        ':!reference/' ':!docs/notes/' ':!tools/check_comments.sh'
        ':!src/core/tests/source_path.cpp')
 
-tracked=$(git ls-files)
+tracked=$(git ls-files --cached --others --exclude-standard)
 fail=0
 
 resolves() {

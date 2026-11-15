@@ -459,6 +459,63 @@ SS_MSG(home_back_to_trainer,
     NL("Terug naar de trainer"), RU("Вернуться к тренажёру"),
     TR("Eğiticiye dön"));
 
+SS_MSG(home_reopen_dataset,
+    EN("Reopen a Dataset to Rebuild..."),
+    JA("データセットを開いて再構築…"),
+    ZH_HANS("重新打开数据集以重建…"),
+    ZH_HANT("重新開啟資料集以重建…"),
+    KO("데이터셋을 열어 다시 만들기…"),
+    DE("Datensatz zum Neuaufbau öffnen …"),
+    FR("Rouvrir un jeu de données pour reconstruire…"),
+    ES("Reabrir un conjunto de datos para reconstruir…"),
+    PT("Reabrir um conjunto de dados para reconstruir…"),
+    IT("Riapri un set di dati per ricostruire…"),
+    NL("Dataset heropenen om te herbouwen…"),
+    RU("Открыть набор данных для пересборки…"),
+    TR("Yeniden kurmak için veri kümesini aç…"));
+
+SS_MSG(home_reopen_dataset_help,
+    EN("Sets the panel up from what the dataset folder records: the original "
+       "videos, their frame rate and skipped seconds, the 360 layout, and the "
+       "folder itself as the output. Frames and masks already there are kept."),
+    JA("データセットフォルダーが記録した内容から設定を復元します。元の動画、フレームレー"
+       "ト、スキップ秒数、360 レイアウト、出力先。既存のフレームとマスクは保持されます。"),
+    ZH_HANS("从数据集文件夹记录的内容恢复设置：原始视频、帧率、跳过的秒数、360 布局，"
+            "以及以该文件夹本身作为输出。已有的帧和遮罩会被保留。"),
+    ZH_HANT("從資料集資料夾記錄的內容恢復設定：原始影片、影格率、跳過的秒數、360 佈局，"
+            "以及以該資料夾本身作為輸出。已有的影格和遮罩會被保留。"),
+    KO("데이터셋 폴더에 기록된 내용으로 설정을 복원합니다. 원본 영상, 프레임 레이트, 건너"
+       "뛴 초, 360 레이아웃, 그리고 그 폴더를 출력으로 사용합니다. 기존 프레임과 마스크는 유지됩니다."),
+    DE("Stellt das Bedienfeld aus dem wieder her, was der Datensatzordner "
+       "aufzeichnet: die Originalvideos, Bildrate und übersprungene Sekunden, "
+       "das 360-Layout, und den Ordner selbst als Ausgabe. Vorhandene Frames "
+       "und Masken bleiben erhalten."),
+    FR("Règle le panneau d'après ce que le dossier du jeu de données enregistre : "
+       "les vidéos d'origine, leur cadence et les secondes ignorées, la mise en "
+       "page 360, et le dossier lui-même comme sortie. Les images et masques "
+       "existants sont conservés."),
+    ES("Configura el panel con lo que la carpeta del conjunto de datos registra: "
+       "los vídeos originales, su tasa de fotogramas y los segundos omitidos, la "
+       "disposición 360, y la propia carpeta como salida. Los fotogramas y "
+       "máscaras ya presentes se conservan."),
+    PT("Configura o painel a partir do que a pasta do conjunto de dados regista: "
+       "os vídeos originais, a taxa de fotogramas e os segundos ignorados, a "
+       "disposição 360, e a própria pasta como saída. Os fotogramas e máscaras "
+       "já existentes são mantidos."),
+    IT("Configura il pannello con ciò che la cartella del set di dati registra: "
+       "i video originali, la frequenza fotogrammi e i secondi saltati, il "
+       "layout 360, e la cartella stessa come output. Fotogrammi e maschere "
+       "esistenti vengono conservati."),
+    NL("Stelt het paneel in vanuit wat de datasetmap vastlegt: de originele "
+       "video's, hun framesnelheid en overgeslagen seconden, de 360-indeling, "
+       "en de map zelf als uitvoer. Bestaande frames en maskers blijven staan."),
+    RU("Настраивает панель по тому, что записано в папке набора данных: исходные "
+       "видео, их частота кадров и пропущенные секунды, раскладка 360, и сама "
+       "папка как выход. Уже готовые кадры и маски сохраняются."),
+    TR("Paneli, veri kümesi klasörünün kaydettiğinden kurar: özgün videolar, "
+       "kare hızları ve atlanan saniyeler, 360 düzeni ve çıktı olarak klasörün "
+       "kendisi. Var olan kareler ve maskeler korunur."));
+
 SS_MSG(home_open_dataset,
     EN("Open a Dataset..."),
     JA("データセットを開く…"),
@@ -661,6 +718,41 @@ SS_MSG(back_home,
     KO("< 홈"),           DE("< Start"),      FR("< Accueil"),   ES("< Inicio"),
     PT("< Início"),      IT("< Home"),       NL("< Start"),     RU("< Главная"),
     TR("< Ana ekran"));
+
+SS_MSG(back_dataset,
+    EN("< Dataset"),     JA("< データセット"), ZH_HANS("< 数据集"),  ZH_HANT("< 資料集"),
+    KO("< 데이터셋"),     DE("< Datensatz"),   FR("< Jeu de données"),
+    ES("< Conjunto de datos"), PT("< Conjunto de dados"),
+    IT("< Set di dati"), NL("< Dataset"),     RU("< Набор данных"),
+    TR("< Veri kümesi"));
+
+SS_MSG(back_dataset_help,
+    EN("Go back to the dataset screen with this dataset loaded, so its "
+       "reconstruction can be built again without picking the folder again."),
+    JA("このデータセットを読み込んだままデータセット画面に戻り、フォルダを"
+       "選び直さずに再構成をやり直せます。"),
+    ZH_HANS("回到数据集界面并载入这个数据集，不用重新选择文件夹就能重新"
+             "重建。"),
+    ZH_HANT("回到資料集畫面並載入這個資料集，不必重新選擇資料夾就能重新"
+             "重建。"),
+    KO("이 데이터셋을 불러온 채 데이터셋 화면으로 돌아가서, 폴더를 다시 "
+       "고르지 않고 재구성할 수 있습니다."),
+    DE("Zurück zum Datensatz-Bildschirm mit diesem Datensatz geladen, um die "
+       "Rekonstruktion neu zu bauen, ohne den Ordner erneut zu wählen."),
+    FR("Retour à l'écran du jeu de données avec celui-ci chargé, pour refaire "
+       "la reconstruction sans choisir le dossier à nouveau."),
+    ES("Vuelve a la pantalla del conjunto de datos con este cargado, para "
+       "rehacer la reconstrucción sin volver a elegir la carpeta."),
+    PT("Volta à tela do conjunto de dados com este carregado, para refazer a "
+       "reconstrução sem escolher a pasta de novo."),
+    IT("Torna alla schermata del set di dati con questo caricato, per rifare "
+       "la ricostruzione senza scegliere di nuovo la cartella."),
+    NL("Terug naar het dataset-scherm met deze dataset geladen, om de "
+       "reconstructie opnieuw te bouwen zonder de map opnieuw te kiezen."),
+    RU("Вернуться на экран набора данных с этим набором, чтобы перестроить "
+       "реконструкцию, не выбирая папку заново."),
+    TR("Bu veri kümesi yüklenmiş halde veri kümesi ekranına dönün; klasörü "
+       "yeniden seçmeden yeniden kurulumu tekrarlayın."));
 
 SS_MSG(leaving_stops_training,
     EN("Training is in progress -- leaving stops it (a checkpoint is saved "
@@ -2523,6 +2615,34 @@ SS_MSG(confirm_home,
     NL("Training stoppen en naar het beginscherm gaan?"),
     RU("Остановить обучение и вернуться на главный экран?"),
     TR("Eğitimi durdurup ana ekrana dönelim mi?"));
+
+SS_MSG(confirm_dataset_edit,
+    EN("Stop training and go back to the dataset screen? Its reconstruction "
+       "is not touched until you run it again."),
+    JA("学習を停止してデータセット画面に戻りますか？再構成は、もう一度実行"
+       "するまで変更されません。"),
+    ZH_HANS("停止训练并回到数据集界面吗？在再次运行之前，它的重建结果不会"
+             "被改动。"),
+    ZH_HANT("停止訓練並回到資料集畫面嗎？在再次執行之前，它的重建結果不會"
+             "被改動。"),
+    KO("학습을 멈추고 데이터셋 화면으로 갈까요? 다시 실행하기 전까지 재구성"
+       "결과는 그대로입니다."),
+    DE("Training anhalten und zum Datensatz-Bildschirm zurückkehren? Die "
+       "Rekonstruktion bleibt unverändert, bis sie erneut ausgeführt wird."),
+    FR("Arrêter l'entraînement et revenir à l'écran du jeu de données ? Sa "
+       "reconstruction reste inchangée jusqu'à une nouvelle exécution."),
+    ES("¿Detener el entrenamiento y volver a la pantalla del conjunto de "
+       "datos? Su reconstrucción no se toca hasta que la ejecute de nuevo."),
+    PT("Parar o treinamento e voltar à tela do conjunto de dados? A "
+       "reconstrução dele só é refeita quando você a executar de novo."),
+    IT("Fermare l'addestramento e tornare alla schermata del set di dati? La "
+       "sua ricostruzione resta com'è finché non la riesegui."),
+    NL("Training stoppen en terug naar het dataset-scherm? De reconstructie "
+       "blijft ongewijzigd tot u die opnieuw uitvoert."),
+    RU("Остановить обучение и вернуться на экран набора данных? Его "
+       "реконструкция останется прежней, пока вы не запустите её снова."),
+    TR("Eğitimi durdurup veri kümesi ekranına dönelim mi? Yeniden kurulumu "
+       "yeniden çalıştırana kadar değişmez."));
 
 SS_MSG(confirm_open,
     EN("Stop training and open the new dataset?"),

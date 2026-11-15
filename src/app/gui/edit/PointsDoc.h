@@ -37,6 +37,7 @@ public:
     bool live_centers(dsparse::CenterTable& out) const override;
     spirula::Sim3 view_frame() const override;
     bool up_hint(float up[3]) const override;
+    std::array<double, 3> file_up_in_view() const;
     bool colours(std::vector<float>& rgb) const override;
     bool colours_available() const override {
         return layer() == 0 && !_ds.points.rgb.empty();
@@ -53,8 +54,27 @@ public:
     spirula::SparseFormat format() const { return _fmt; }
     const std::string& dataset_dir() const { return _dataset_dir; }
 
+    // The sky dome: adds the hemisphere as one undoable step, and says what
+    // it measured. Refuses with nothing to measure against, so the caller can
+    // show the reason rather than adding an empty shell.
+    struct DomeFit {
+        bool present = false;
+        double radius = 0.0;
+        int64_t points = 0;
+    };
+    DomeFit add_sky_dome(int subdivisions, double percentile, std::string* error);
+    // What add_sky_dome would measure, without adding anything: the radius the
+    // percentile picks and how many points it would carry.
+    DomeFit measure_sky_dome(int subdivisions, double percentile,
+                            std::string* error) const;
+
 protected:
     void publish_impl(bool geometry) override;
+    // The dome is appended to the layer and to _ds.points together, so undo has
+    // to take it off both.
+    void rows_appended(int layer, int64_t first, int64_t count,
+                       const uint8_t* rgb) override;
+    void rows_dropped(int layer, int64_t count) override;
 
 private:
     // The layer order, which is also what the panel offers.

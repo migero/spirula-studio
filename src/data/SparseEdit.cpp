@@ -180,7 +180,8 @@ std::string move_frames_bin(const std::string& src, const Sim3& moved) {
 std::string filter_points3d_bin(const std::string& src,
                                 const std::vector<uint8_t>& keep,
                                 const std::set<int32_t>& dropped_ids,
-                                const Sim3* moved) {
+                                const Sim3* moved,
+                                const ColmapPoints3D& add) {
     const char* p = src.data();
     const char* end = src.data() + src.size();
     if ((size_t)(end - p) < sizeof(uint64_t))
@@ -190,10 +191,13 @@ std::string filter_points3d_bin(const std::string& src,
     out.reserve(src.size());
     out.resize(sizeof(uint64_t));
     uint64_t kept = 0;
+    uint64_t max_id = 0;
     for (uint64_t i = 0; i < n; i++) {
         const char* head = p;
         if (end - p < 8 + 24 + 3 + 8 + 8)
             throw std::runtime_error("points3D.bin is truncated");
+        uint64_t id = 0;
+        std::memcpy(&id, head, sizeof id);          // read_le would move head
         p += 8 + 24 + 3 + 8;                          // id, xyz, rgb, error
         const size_t head_bytes = (size_t)(p - head);
         const uint64_t track = read_le<uint64_t>(p);
@@ -203,6 +207,7 @@ std::string filter_points3d_bin(const std::string& src,
             throw std::runtime_error("points3D.bin is truncated");
         p += track_bytes;
         if (i < keep.size() && !keep[(size_t)i]) continue;
+        if (id > max_id) max_id = id;
         const size_t at = out.size();
         out.append(head, head_bytes);
         if (moved) {
@@ -228,6 +233,25 @@ std::string filter_points3d_bin(const std::string& src,
             put_le<uint64_t>(out, n_live);
             out += live;
         }
+        kept++;
+    }
+    // The dome: fresh ids above the file's own, and no track at all, so it is
+    // read back as points and nothing else. `error` 0 with a zero track length
+    // is what a trackless point is.
+    for (int64_t k = 0; k < add.num(); k++) {
+        put_le<uint64_t>(out, ++max_id);
+        double xyz[3] = {add.xyz[(size_t)k * 3 + 0], add.xyz[(size_t)k * 3 + 1],
+                         add.xyz[(size_t)k * 3 + 2]};
+        if (moved) {
+            double o[3];
+            moved->apply(xyz, o);
+            xyz[0] = o[0]; xyz[1] = o[1]; xyz[2] = o[2];
+        }
+        for (double v : xyz) put_le<double>(out, v);
+        const uint8_t* c = add.rgb.empty() ? nullptr : &add.rgb[(size_t)k * 3];
+        for (int r = 0; r < 3; r++) out += (char)(c ? c[r] : (uint8_t)200);
+        put_le<double>(out, 0.0);
+        put_le<uint64_t>(out, 0);
         kept++;
     }
     std::memcpy(&out[0], &kept, sizeof(uint64_t));
@@ -295,10 +319,12 @@ std::string filter_images_txt(const std::string& src,
 std::string filter_points3d_txt(const std::string& src,
                                 const std::vector<uint8_t>& keep,
                                 const std::set<int32_t>& dropped_ids,
-                                const Sim3* moved) {
+                                const Sim3* moved,
+                                const ColmapPoints3D& add) {
     std::string out;
     out.reserve(src.size());
     size_t pos = 0, index = 0;
+    int64_t max_id = 0;
     while (pos < src.size()) {
         size_t eol = src.find('\n', pos);
         if (eol == std::string::npos) eol = src.size();
@@ -316,6 +342,13 @@ std::string filter_points3d_txt(const std::string& src,
         if (!take) {
             pos = next;
             continue;
+        }
+        // The first field is the id; the dome is numbered above the file's own.
+        {
+            const char* s = src.c_str() + b;
+            char* q = nullptr;
+            const long v = std::strtol(s, &q, 10);
+            if (q != s && (int64_t)v > max_id) max_id = (int64_t)v;
         }
         if (dropped_ids.empty() && !moved) {
             out.append(src, pos, std::min(next, src.size()) - pos);
@@ -360,6 +393,22 @@ std::string filter_points3d_txt(const std::string& src,
         }
         out += head + track + "\n";
         pos = next;
+    }
+    // Trackless rows: id, xyz, rgb, error, and no track at all.
+    char buf[256];
+    for (int64_t k = 0; k < add.num(); k++) {
+        double xyz[3] = {add.xyz[(size_t)k * 3 + 0], add.xyz[(size_t)k * 3 + 1],
+                         add.xyz[(size_t)k * 3 + 2]};
+        if (moved) {
+            double o[3];
+            moved->apply(xyz, o);
+            xyz[0] = o[0]; xyz[1] = o[1]; xyz[2] = o[2];
+        }
+        const uint8_t* c = add.rgb.empty() ? nullptr : &add.rgb[(size_t)k * 3];
+        std::snprintf(buf, sizeof buf, "%lld %.17g %.17g %.17g %d %d %d 0\n",
+                      (long long)++max_id, xyz[0], xyz[1], xyz[2],
+                      c ? (int)c[0] : 200, c ? (int)c[1] : 200, c ? (int)c[2] : 200);
+        out += buf;
     }
     return out;
 }
@@ -664,12 +713,13 @@ SparseStats read_sparse_stats(const std::string& dataset_dir) {
 
 void write_ply_points(const std::string& path, const double* xyz,
                       const uint8_t* rgb, int64_t n, const uint8_t* keep,
-                      const Sim3* moved) {
+                      const Sim3* moved, const ColmapPoints3D* add) {
     int64_t kept = n;
     if (keep) {
         kept = 0;
         for (int64_t i = 0; i < n; i++) kept += keep[i] ? 1 : 0;
     }
+    if (add) kept += add->num();
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
     std::ofstream f(path, std::ios::binary);
@@ -689,6 +739,25 @@ void write_ply_points(const std::string& path, const double* xyz,
                               rgb ? rgb[i * 3 + 1] : (uint8_t)200,
                               rgb ? rgb[i * 3 + 2] : (uint8_t)200};
         f.write(reinterpret_cast<const char*>(c), sizeof c);
+    }
+    if (add) {
+        for (int64_t i = 0; i < add->num(); i++) {
+            double q[3] = {add->xyz[(size_t)i * 3], add->xyz[(size_t)i * 3 + 1],
+                           add->xyz[(size_t)i * 3 + 2]};
+            if (moved) {
+                double o[3];
+                moved->apply(&add->xyz[(size_t)i * 3], o);
+                q[0] = o[0]; q[1] = o[1]; q[2] = o[2];
+            }
+            const float p[3] = {(float)q[0], (float)q[1], (float)q[2]};
+            f.write(reinterpret_cast<const char*>(p), sizeof p);
+            const uint8_t* rc = add->rgb.empty() ? nullptr
+                                                : &add->rgb[(size_t)i * 3];
+            const uint8_t c[3] = {rc ? rc[0] : (uint8_t)200,
+                                  rc ? rc[1] : (uint8_t)200,
+                                  rc ? rc[2] : (uint8_t)200};
+            f.write(reinterpret_cast<const char*>(c), sizeof c);
+        }
     }
     f.flush();
     if (!f) throw std::runtime_error("write failed: " + path);
@@ -779,9 +848,11 @@ std::vector<std::string> sparse_write_filtered(const std::string& dataset_dir,
             const fs::path pp = model / (b.text ? "points3D.txt" : "points3D.bin");
             keep_original(pp);
             write_file(pp, b.text ? filter_points3d_txt(b.points, keep.points,
-                                                        dropped_ids, moved)
+                                                        dropped_ids, moved,
+                                                        keep.append)
                                   : filter_points3d_bin(b.points, keep.points,
-                                                        dropped_ids, moved));
+                                                        dropped_ids, moved,
+                                                        keep.append));
             written.push_back(pp.string());
             break;
         }
@@ -800,7 +871,7 @@ std::vector<std::string> sparse_write_filtered(const std::string& dataset_dir,
             write_ply_points(ply.string(), b.cloud.xyz.data(),
                              b.cloud.rgb.empty() ? nullptr : b.cloud.rgb.data(),
                              b.cloud.num(), keep.points.data(),
-                             moved ? &in_json : nullptr);
+                             moved ? &in_json : nullptr, &keep.append);
             written.push_back(ply.string());
             drop_frames(meta, drop);
             if (moved) move_frames(meta, in_json);

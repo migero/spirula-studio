@@ -510,7 +510,9 @@ trajectory, ARKit, RTK); the second reads each registered image's own EXIF GPS
 and converts it to a local east-north-up frame. Either way a similarity is
 fitted from the camera centres with LO-RANSAC over the same `estimateSim3` that
 model merging uses, and `--metric-max-error` is its inlier radius in metres (0
-picks 5 for GPS, 0.5 for a positions file).
+picks 5 for GPS, 0.5 for a positions file). The GUI offers it as one 1-10 field
+under Sensors and always sends it, because a video's own GPS track takes the same
+radius whether or not the photographs carry EXIF positions.
 
 `--metric-gps` takes `none` (the CLI default; the GUI asks for `horizontal`),
 `horizontal` or `full`, and the difference is the altitude.

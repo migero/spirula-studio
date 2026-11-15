@@ -1,0 +1,2 @@
+FROM laguna-xs-2.1
+PARAMETER num_ctx 65536

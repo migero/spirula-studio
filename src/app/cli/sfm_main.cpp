@@ -9,6 +9,7 @@
 // first, so a hand-parsed name wins -- `map --audit` (run an audit pass) has to
 // beat the table's `--audit` / `--no-audit` switch.
 #include "app/Tools.h"
+#include "app/GoProBin.h"
 #include "sfm/Pipeline.h"
 
 #include <algorithm>
@@ -799,6 +800,7 @@ static int cmdMap(int argc, char** argv) {
         else return usageError("map", "unexpected argument '" + a + "'");
     }
     if (std::string err = cfg.finalize(CMD_MAP); !err.empty()) return usageError("map", err);
+    app::attachSunTracks(cfg);
     if (std::string err = cfg.resolveDevice(); !err.empty()) return usageError("map", err);
     if (matchesPath.empty() || cfg.feature_dir.empty())
         return usageError("map", "a match database and a feature directory are required");
@@ -1069,6 +1071,7 @@ static int cmdMerge(int argc, char** argv) {
         inputs.push_back(a);
     }
     if (std::string err = cfg.finalize(CMD_MERGE); !err.empty()) return usageError("merge", err);
+    app::attachSunTracks(cfg);
     if (std::string err = cfg.resolveDevice(); !err.empty()) return usageError("merge", err);
     if (inputs.empty()) return usageError("merge", "at least one model directory is required");
     if (output.empty() && !cfg.in_place)
@@ -1182,6 +1185,7 @@ static int cmdAuto(int argc, char** argv) {
         return usageError("auto", err);
     if (req.wants_help) { printCommandHelp(*findCommand("auto")); return 0; }
     if (!req.progress_dir.empty()) sfm::progress::set_dir(req.progress_dir);
+    app::attachSunTracks(req.cfg);
     installEventPrinter(req.cfg);
     return run_auto(req.cfg, req.in).exit_code;
 }

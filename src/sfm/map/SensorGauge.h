@@ -485,23 +485,37 @@ private:
             return;
         }
 
-        // Base: up to +Z, then the GPS yaw and place, then the scale.
+        // Base: up to +Z, then the GPS yaw and place, then the scale. A lost
+        // scale argument does not cost the heading or the place: the fit's
+        // rotation still says which way north is and where the model sits.
         const Mat3 R_up = rotationUpToZ(_up_w);
         Mat3 R0 = R_up;
         Vec3 t0{0, 0, 0};
         double s0 = 1.0;
-        if (use_gps) {
+        Vec3 gps_mid{0, 0, 0};
+        int gps_mid_n = 0;
+        if (out.gps.ok) {
             R0 = mul(out.gps.T.R, R_up);
             t0 = out.gps.T.t;
             s0 = out.gps.T.scale;
+            for (size_t i = 0; i < _frames.size(); i++)
+                if (_gps_ok[i]) {
+                    gps_mid = gps_mid + mul(R_up, _frames[i].c);
+                    gps_mid_n++;
+                }
         }
         if (use_imu && use_gps) {
             const double wi = 1.0 / (out.scale_imu_sigma * out.scale_imu_sigma);
             const double wg = 1.0 / (out.scale_gps_sigma * out.scale_gps_sigma);
             s0 = std::exp((wi * std::log(out.scale_imu) + wg * std::log(out.scale_gps)) / (wi + wg));
-            t0 = t0 * (s0 / out.gps.T.scale);
         } else if (use_imu) {
             s0 = out.scale_imu;
+        }
+        // The fit placed its centroid md = t + s R ms; keep md while the
+        // scale moves away from the GPS's.
+        if (out.gps.ok && gps_mid_n > 0 && s0 != out.gps.T.scale) {
+            gps_mid = gps_mid * (1.0 / (double)gps_mid_n);
+            t0 = t0 + mul(out.gps.T.R, gps_mid) * (out.gps.T.scale - s0);
         }
 
         Params p;
@@ -519,7 +533,7 @@ private:
         const double s = _base_s * std::exp(p.log_s);
         const Mat3 R = mul(so3Exp(p.rot), _base_R);
         Vec3 t = _base_t + p.t;
-        if (!use_gps) {
+        if (!out.gps.ok) {
             Vec3 mid{0, 0, 0};
             int n = 0;
             for (const auto& kv : _rec.images)
@@ -545,7 +559,7 @@ private:
         out.metric = true;
         out.scale_from_imu = use_imu;
         out.scale_from_gps = use_gps;
-        out.place_from_gps = use_gps;
+        out.place_from_gps = out.gps.ok;
     }
 
     Mat3 _base_R = mat3Identity();

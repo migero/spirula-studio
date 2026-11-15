@@ -684,6 +684,20 @@ bool read_gpmf(const Source& src, const Track& tk, Telemetry& out, std::string& 
                             "to a fixed world vector (2-8 deg over three MAX files)");
     }
 
+    // IORI, the second attitude stream GoPro's World Lock composes CORI with.
+    if (auto it = acc.find(fourcc("IORI")); it != acc.end()) {
+        GpmfAccum& a = it->second;
+        std::vector<double> times;
+        spread_times(a.starts, a.counts, times);
+        for (size_t i = 0; i < a.rows.size() && i < times.size(); i++) {
+            if (a.rows[i].size() < 4) continue;
+            TelemetryQuat q;
+            q.t = times[i];
+            q.w = a.rows[i][0]; q.x = a.rows[i][1]; q.y = a.rows[i][2]; q.z = a.rows[i][3];
+            out.initial_orientation.push_back(q);
+        }
+    }
+
     for (uint32_t key : {fourcc("GPS5"), fourcc("GPS9")}) {
         auto it = acc.find(key);
         if (it == acc.end()) continue;

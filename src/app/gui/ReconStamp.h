@@ -20,6 +20,9 @@ namespace gui {
 // one step earlier -- what the pictures in images/ were extracted with.
 inline constexpr const char* kReconStampFile = ".spirula-recon";
 inline constexpr const char* kFramesStampFile = ".spirula-frames";
+// What the panel said masking should do, written by the dataset screen so a
+// reopened one can put the prompts and the GoPro fields back.
+inline constexpr const char* kMaskStampFile = ".spirula-masks";
 
 struct ReconStamp {
     bool present = false;

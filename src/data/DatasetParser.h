@@ -66,6 +66,10 @@ struct ColmapImage {
 struct ColmapPoints3D {
     std::vector<double>   xyz;        // [N, 3] flat
     std::vector<uint8_t>  rgb;        // [N, 3] flat
+    // One per point: 1 when no image saw it, which is how a sky dome's
+    // synthetic points are told from triangulated ones. Empty when the source
+    // did not say, and then every point is taken as triangulated.
+    std::vector<uint8_t>  trackless;
     int64_t num() const { return (int64_t)xyz.size() / 3; }
 };
 

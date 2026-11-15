@@ -66,7 +66,7 @@ static void test_dataset_preset() {
     s.sfm.prep.max_frames = 1234;
     s.sfm.prep.auto_rotate = false;
     s.sfm.prep.force_external_decode = true;
-    s.sfm.prep.pano.mode = app::Pano360Mode::Equirect;
+    s.sfm.prep.pano.mode = app::Pano360Mode::Corners;
     s.sfm.prep.pano.size = 2048;
     s.sfm.prep.pano.yaw = 10.0f;
     s.sfm.prep.pano.pitch = -20.0f;
@@ -91,6 +91,11 @@ static void test_dataset_preset() {
     s.sfm.prep.mask_memory = true;
     s.sfm.prep.mask_detect_every = 4;
     s.sfm.prep.mask_memory_frames = 5;
+    // The view gate's three, each off its default (1, 6, 0.98) so the round
+    // trip proves something.
+    s.sfm.prep.mask_scan_every = 7;
+    s.sfm.prep.mask_ray_stride = 3;
+    s.sfm.prep.mask_merge_cos = 0.9f;
 
     s.sfm.geometry.enable = true;
     s.sfm.geometry.model = "moge2-vitl";
@@ -208,6 +213,9 @@ static void test_dataset_preset() {
     CHECK_EQ(b.sfm.prep.mask_memory, s.sfm.prep.mask_memory);
     CHECK_EQ(b.sfm.prep.mask_detect_every, s.sfm.prep.mask_detect_every);
     CHECK_EQ(b.sfm.prep.mask_memory_frames, s.sfm.prep.mask_memory_frames);
+    CHECK_EQ(b.sfm.prep.mask_scan_every, s.sfm.prep.mask_scan_every);
+    CHECK_EQ(b.sfm.prep.mask_ray_stride, s.sfm.prep.mask_ray_stride);
+    CHECK_EQ(b.sfm.prep.mask_merge_cos, s.sfm.prep.mask_merge_cos);
 
     CHECK_EQ(b.sfm.geometry.enable, s.sfm.geometry.enable);
     CHECK_EQ(b.sfm.geometry.model, s.sfm.geometry.model);
@@ -342,9 +350,12 @@ static void test_sanitize() {
     s.mask.box_threshold = -2.0f;
     s.colmap.matcher = 0;
     s.colmap.camera_model = "NONSENSE";
+    // The last unwrap mode must survive, not fall back to the one before it.
+    s.sfm.prep.pano.mode = app::Pano360Mode::Fisheye;
     gui::sanitize_dataset_settings(s);
     CHECK(s.sfm.quality >= 0 && s.sfm.quality <= 3);
     CHECK_EQ(s.sfm.camera_model, std::string("opencv"));
+    CHECK(s.sfm.prep.pano.mode == app::Pano360Mode::Fisheye);
     CHECK_EQ(s.sfm.matcher, 0);
     CHECK(s.sfm.prep.sharp_window >= 1);
     CHECK(s.sfm.prep.adaptive_range >= 1.0f);

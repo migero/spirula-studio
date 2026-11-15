@@ -137,6 +137,15 @@ void sweep_sfm_intermediates(const std::string& ws) {
 }
 
 
+// A Fisheye pano plan's frames are two equidistant lenses, not the ring of
+// pinholes the plan also offers nor the panorama's own spherical model: f =
+// side/pi is what puts the 180 degree circle exactly inside the square.
+bool pano_fisheye(const PrepJob& prep, const PrepInput& in) {
+    return in.pano360.valid() && prep.pano.mode == app::Pano360Mode::Fisheye;
+}
+constexpr const char* kFisheyeModel = "opencv-fisheye";
+constexpr float kFisheyeFocalFactor = (float)(1.0 / M_PI);
+
 // The mapper only writes a model when it finishes, so any model on disk is
 // from a completed run.
 bool has_model(const fs::path& sparse) {
@@ -263,6 +272,7 @@ void SfmRunner::take_reconstruction(SfmJob& job) {
     job.features = _live.features;
     job.matcher = _live.matcher;
     job.metric_gps = _live.metric_gps;
+    job.gps_max_error = _live.gps_max_error;
     job.sensor_gauge = _live.sensor_gauge;
     job.exif_attitude = _live.exif_attitude;
     job.keep_intermediate = _live.keep_intermediate;
@@ -287,6 +297,9 @@ void SfmRunner::take_geometry(SfmJob& job) {
 void SfmRunner::take_masking(PrepJob& prep) {
     std::lock_guard<std::mutex> lk(_mu);
     prep.mask_enable = _live.prep.mask_enable;
+    prep.gopro_tracking = _live.prep.gopro_tracking;
+    prep.gopro_renderer = _live.prep.gopro_renderer;
+    prep.gopro_cache_folder = _live.prep.gopro_cache_folder;
     prep.mask_prompt = _live.prep.mask_prompt;
     prep.mask_negative_prompt = _live.prep.mask_negative_prompt;
     prep.mask_feature_prompt = _live.prep.mask_feature_prompt;
@@ -459,12 +472,17 @@ sfm::Manifest SfmRunner::build_manifest(const SfmJob& job, const PrepResult& pre
 
     for (size_t i = 0; i < groups.size(); i++) {
         const CameraGroup& g = groups[i];
-        const float focal = group_focal(job.prep.inputs, g);
+        // A Fisheye plan's views are equidistant lenses of their own, so the
+        // model and focal the panel resolved from the input describe something
+        // else (the pinhole the faces want, or the panorama's spherical model).
+        const bool fisheye = pano_fisheye(job.prep, job.prep.inputs[g.input]);
+        const std::string model = fisheye ? kFisheyeModel : models[i];
+        const float focal = fisheye ? kFisheyeFocalFactor : group_focal(job.prep.inputs, g);
         sfm::ManifestCamera c;
         c.prefix = g.rel;
         // For the whole capture the panel's own "Camera / lens" is the single
         // source of truth and is already in the argv; only a named group adds one.
-        if (!g.rel.empty() && !models[i].empty()) c.model = models[i];
+        if (!g.rel.empty() && !model.empty()) c.model = model;
         if (focal > 0 && !(g.rel.empty() && job.init_focal_px > 0)) {
             const std::string dir =
                 (g.rel.empty() ? fs::path(prep.image_dir)
@@ -540,6 +558,23 @@ bool apply_known_lenses(const PrepJob& prep, const PrepResult* res, const PrepIn
         for (app::Pano360View& v : app::pano360_views(in.pano360, prep.pano))
             if (!v.dir.empty()) views.push_back(v);
         if (views.size() != d.members.size()) return false;
+        if (prep.pano.mode == app::Pano360Mode::Fisheye) {
+            // Back-to-back equidistant lenses seeded from the plan's own
+            // rotations. The rig's origin is the first lens's centre, so only the
+            // second may translate: that is the ~3 cm lens baseline.
+            d.kind = "dual-fisheye";
+            for (size_t m = 0; m < views.size(); m++) {
+                sfm::RigMemberDef& md = d.members[m];
+                md.has_ext = true;
+                for (int r = 0; r < 3; r++)
+                    for (int c = 0; c < 3; c++) md.ext.R[3 * r + c] = views[m].rot[3 * c + r];
+                md.ext.t = {0, 0, 0};
+                md.ext_fixed = false;
+                md.dof = m == 0 ? sfm::kRigDofRotation : sfm::kRigDofAll;
+            }
+            return true;
+        }
+        d.kind = "virtual-360";
         // Faces of an EAC packing: five per lens, lens by lens; a stitched
         // panorama's all share one centre. The rotations are refined all the
         // same: a GoPro calibrates 0.1-0.5 deg off the cut ones, 6 px here.
@@ -551,6 +586,9 @@ bool apply_known_lenses(const PrepJob& prep, const PrepResult* res, const PrepIn
                 for (int c = 0; c < 3; c++) md.ext.R[3 * r + c] = views[m].rot[3 * c + r];
             md.ext.t = {0, 0, 0};
             md.ext_fixed = false;
+            // Only the second lens may translate: the ~3 cm between the lenses
+            // is measurable across frames, unlike the rotations, and came back
+            // 0.0276 units on a 552-frame walk.
             md.dof = m < per_lens ? sfm::kRigDofRotation : sfm::kRigDofAll;
         }
         return true;
@@ -681,10 +719,16 @@ std::vector<sfm::RigDef> SfmRunner::build_rigs(const PrepJob& prep, const PrepRe
 // device is appended only when launching.
 std::vector<std::string> SfmRunner::recon_args(const SfmJob& job,
                                                const PrepResult& prep) {
+    // The argv carries the dataset-wide model, which a manifest entry cannot
+    // restate: a Fisheye plan at the top of the tree has to say its own here.
+    std::string model = job.camera_model;
+    for (const CameraGroup& g : camera_groups(job.prep.inputs))
+        if (g.rel.empty() && pano_fisheye(job.prep, job.prep.inputs[g.input]))
+            model = kFisheyeModel;
     std::vector<std::string> argv = {
         "--quality", pick(kQuality, job.quality, 2),
         "--data-type", pick(kDataType, job.data_type),
-        "--camera-model", job.camera_model,
+        "--camera-model", model,
         "--camera-mode", pick(kCameraMode, job.camera_mode, 1),
         "--mapper", pick(kMapper, job.mapper),
         "--features", pick(kFeatures, job.features),
@@ -765,6 +809,10 @@ std::vector<std::string> SfmRunner::recon_args(const SfmJob& job,
         argv.push_back("--exif-attitude");
         argv.push_back(pick(kExifAttitude, job.exif_attitude, 2));
     }
+    // Always sent: 5 is what the CLI resolves to, and a video's own GPS track
+    // takes this radius whether or not the photographs have EXIF positions.
+    argv.push_back("--metric-max-error");
+    argv.push_back(std::to_string(job.gps_max_error));
     if (!job.image_gamut.empty()) {
         argv.push_back("--image-gamut");
         argv.push_back(job.image_gamut);
@@ -800,6 +848,10 @@ std::vector<std::string> SfmRunner::recon_args(const SfmJob& job,
 void SfmRunner::run(SfmJob job) {
     auto fail = [&](const std::string& why) {
         _prog.finish(_cancel.load() ? StageStatus::Skipped : StageStatus::Failed);
+        // The failure goes ON the log, not only in the panel: the file is what
+        // a user pastes from, and a stage that ends between lines would
+        // otherwise end in mid-sentence with no verdict in it.
+        log(why);
         std::lock_guard<std::mutex> lk(_mu);
         _error = why;
         _state = _cancel.load() ? State::Cancelled : State::Failed;

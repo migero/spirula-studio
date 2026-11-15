@@ -468,9 +468,10 @@ std::string SfmConfig::finalize(uint32_t cmd) {
     if (gps && image_dir.empty() && !(cmd & CMD_AUTO))
         return "--metric-gps reads each image's EXIF, so it needs --images";
     // GPS is metres-accurate and a positions file is usually centimetres, so
-    // one default cannot serve both; 0 means "the one for this source".
+    // one default cannot serve both; 0 means "the one for this source". With
+    // neither, a video's own track still needs one, and it is GPS-grade.
     if (metric_max_error == 0)
-        metric_max_error = gps ? 5.0 : 0.5;
+        metric_max_error = (!metric_positions.empty() && !gps) ? 0.5 : 5.0;
     if (!telemetry.empty()) {
         bool listed = false;
         for (const TelemetryInput& t : telemetry_inputs)

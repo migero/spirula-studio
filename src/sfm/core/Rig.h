@@ -77,7 +77,7 @@ struct RigDef {
     std::string name;
     std::vector<RigMemberDef> members;
     std::vector<std::string> captures;  // "*" = every top-level folder
-    std::string kind;                   // "" or "dual-fisheye" (applyRigKind)
+    std::string kind;                   // "", "dual-fisheye" or "virtual-360" (applyRigKind)
 };
 
 // Back-to-back fisheyes: Insta360 X, DJI Osmo 360 and a PortalCam's two
@@ -90,8 +90,8 @@ inline Pose dualFisheyeNominal() {
 // not: a dual fisheye starts as two lenses turned 180 degrees about the image's
 // vertical, refined in all 6 DOF unless `refine:` says otherwise. "" or the error.
 inline std::string applyRigKind(RigDef& d) {
-    if (d.kind.empty()) return {};
-    if (d.kind != "dual-fisheye") return "unknown rig kind '" + d.kind + "' (dual-fisheye)";
+    if (d.kind.empty() || d.kind == "virtual-360") return {};
+    if (d.kind != "dual-fisheye") return "unknown rig kind '" + d.kind + "' (dual-fisheye or virtual-360)";
     if (d.members.size() < 2) return "rig kind dual-fisheye needs two members";
     RigMemberDef& a = d.members[0];
     RigMemberDef& b = d.members[1];
@@ -134,6 +134,14 @@ struct RigTable {
         return img < of_image.size() ? of_image[img] : RigSlot{};
     }
     const std::vector<uint32_t>& frameOf(RigSlot s) const { return rigs[s.rig].frames[s.frame]; }
+
+    // Crops of one panorama cannot establish depth from their lens overlap.
+    bool depthPair(uint32_t a, uint32_t b) const {
+        const RigSlot x = slot(a), y = slot(b);
+        return !x.valid() || !y.valid() || x.rig != y.rig || x.frame != y.frame ||
+               rigs[x.rig].kind != "virtual-360";
+    }
+
 
     // Fill of_image from the frames; throws on an image claimed twice.
     void index(size_t num_images) {

@@ -108,6 +108,8 @@ struct ColmapJob {
     float video_fps = 2.0f;              // kept frames per second
     bool adaptive_fps = false;           // see PrepJob
     float adaptive_range = 4.0f;
+    bool gps_spacing = false;
+    float gps_spacing_m = 5.0f;
     int sharp_window = 3;                // pick sharpest of N candidates (1 = off)
     app::Pano360Options pano;            // see PrepJob
     int max_frames = 100000;

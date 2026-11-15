@@ -70,6 +70,14 @@ struct TelemetryInput {
     double time_offset = 0;   // seconds added to every frame time
 };
 
+// One sun reading the GoPro player stored beside the video, in the video's own
+// camera frame (the .camera.bin companion). `time` is seconds from the first
+// frame.
+struct SunSample {
+    double time = 0;
+    double x = 0, y = 0, z = 0;
+};
+
 // The aggregate. Sub-option structs are held unchanged so that library callers
 // -- the tests, the mapper's own defaults -- are unaffected by anything here.
 struct SfmConfig {
@@ -180,6 +188,9 @@ struct SfmConfig {
     std::string telemetry;
     std::string sensor_gauge = "auto";
     std::vector<TelemetryInput> telemetry_inputs;   // manifest entries + --telemetry
+    // The player's camera-frame sun per frame, when a .people.camera.bin sits
+    // beside the video. A heading the GPS track cannot give (map/SunHeading.h).
+    std::vector<SunSample> sun_track;
     // The same sensors inside the reconstruction (sfm/map/SensorPriors.h):
     // verification with the gyro's rotation fixed, registrations and solves
     // held to the sensors, pairs within `sensor_pair_radius` metres of GPS.

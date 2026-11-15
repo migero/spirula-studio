@@ -2411,6 +2411,7 @@ private:
     bool triangulatePairAt(const ModelIndex& mi, uint32_t a, uint32_t fa, const Vec3& ba,
                            uint32_t b, uint32_t fb, const Vec3& bb, Vec3& X,
                            double err_scale = 1.0) const {
+        if (rigs_ && !rigs_->depthPair(a, b)) return false;
         const Pose& pa_ = mi.img[a]->pose;
         const Pose& pb_ = mi.img[b]->pose;
         const Camera& ca = *mi.cam[a];
@@ -2439,6 +2440,7 @@ private:
     // threshold with margin -- the churn hysteresis, see D36).
     bool triangulatePair(uint32_t a, uint32_t fa, uint32_t b, uint32_t fb, Vec3& X,
                          double err_scale = 1.0) const {
+        if (rigs_ && !rigs_->depthPair(a, b)) return false;
         Vec3 ba = bearing(a, fa), bb = bearing(b, fb);
         X = triangulateDLT(Pmat(a), Pmat(b), ba, bb);
         Vec3 pa = mul(rec_.images.at(a).pose.R, X) + rec_.images.at(a).pose.t;
@@ -4659,7 +4661,8 @@ private:
         }
         for (size_t i = 0; i + 1 < imgs.size(); i++)
             for (size_t j = i + 1; j < imgs.size(); j++)
-                if (triangulationAngle(x, centers[imgs[i]], centers[imgs[j]]) >= min_ang)
+                if ((!rigs_ || rigs_->depthPair(imgs[i], imgs[j])) &&
+                    triangulationAngle(x, centers[imgs[i]], centers[imgs[j]]) >= min_ang)
                     return true;
         return false;
     }
@@ -4836,10 +4839,12 @@ private:
                     pt.track.resize(keep);
                     bool degenerate = pt.track.size() < 2;
                     if (!degenerate) {
-                        double best = 0;
+                        double best = -1;  // no eligible baseline yet, even when min_ang is zero
                         for (size_t i = 0; i + 1 < pt.track.size() && best < min_ang; i++)
                             for (size_t j = i + 1; j < pt.track.size() && best < min_ang; j++)
-                                best = std::max(best,
+                                if (!rigs_ || rigs_->depthPair(pt.track[i].image_id,
+                                                               pt.track[j].image_id))
+                                    best = std::max(best,
                                                 triangulationAngle(pt.xyz,
                                                                    centers[pt.track[i].image_id],
                                                                    centers[pt.track[j].image_id]));

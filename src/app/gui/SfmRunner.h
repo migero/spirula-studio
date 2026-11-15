@@ -149,6 +149,10 @@ struct SfmJob {
     // The camera attitude a drone writes into each photo: 0 off, 1 orientation
     // only, 2 (the default) orientation and north.
     int exif_attitude = 2;
+    // Metres, 1-10: the inlier radius every GPS fit takes. 5 is what the CLI
+    // resolves to and what a receiver's 3-5 m horizontal error argues for;
+    // below ~3 the prior fights the drift fixes share with their neighbours.
+    int gps_max_error = 5;
     // Keep features/, matches.bin and .resume/ after a finished run. On by
     // default and remembered between sessions: they are what makes a cancelled
     // or failed reconstruction resumable (sfm/core/Resume.h).

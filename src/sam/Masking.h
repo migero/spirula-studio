@@ -110,12 +110,14 @@ public:
     Masker& operator=(const Masker&) = delete;
 
     bool init(const MaskOptions& o, std::string& error);
+    bool runFeatures(const nn::Image& image, sam::Mask& features);
 
     // A mask the size of `image`, 255 = KEEP; `features_out` likewise for
     // feature_text, left empty without one. `frame_id` is what SeedPrompt::frame
-    // matches, -1 counting 0, 1, 2 (src/sam/README.md, "Clicked objects").
+    // matches, -1 counting 0, 1, 2; `camera` names the view, resetting on change.
     bool run(const nn::Image& image, sam::Mask& out, sam::Result* overlay_out,
-             int64_t frame_id = -1, sam::Mask* features_out = nullptr);
+             int64_t frame_id = -1, sam::Mask* features_out = nullptr,
+             const std::string& camera = std::string());
 
     const std::string& lastError() const;
     sam::Session& session();

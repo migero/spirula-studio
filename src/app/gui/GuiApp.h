@@ -107,8 +107,8 @@ public:
 private:
     enum class Screen { Home, NewDataset, Train, Viewer, Batch, Mesh };
     enum class PickAction {
-        None, OpenDataset, SourceImages, SourceVideo, SourceDataset,
-        SourceReplace, Workspace,
+        None, OpenDataset, ReopenDataset, SourceImages, SourceVideo,
+        SourceDataset, SourceReplace, Workspace,
         OutputPrefix, VocabTree, MaskModelFile, SplatFile,
         PresetFile, DatasetPresetFile, MeshPresetFile, PresetSaveFolder,
         BatchDataset, BatchOutput, BatchPresetFile, BatchDatasetPresetFile,
@@ -125,7 +125,8 @@ private:
     // goes through the same confirmation so that "without saving" is offered
     // on every route out of a run.
     enum class Pending {
-        None, GoHome, OpenDataset, OpenSplat, Quit, StartBatch, StopHere
+        None, GoHome, GoDataset, OpenDataset, OpenSplat, Quit, StartBatch,
+        StopHere
     };
 
     // ---- persistence (recents + tool paths) ----
@@ -161,6 +162,15 @@ private:
                       bool keep_log = false);
     // Route for user-initiated opens: confirms first when training.
     void request_open_dataset(std::string dir);
+
+    // Handing the open dataset back to the screen that can rebuild it. Arrives
+    // with "Reconstruct again" ticked: the model stays until a run replaces it.
+    void open_dataset_screen(std::string dir);
+    // The same screen, pointed back at what the dataset's frames stamp
+    // records: original videos, rates, skip-seconds, 360 layout, and the
+    // folder itself as the output. Falls back to open_dataset_screen.
+    void reopen_dataset(std::string dir);
+    void request_dataset_screen();
 
     // The comparison panes, with the editing panel beside them when a pane is
     // being edited. The viewer screen and the meshing preview share it.
@@ -310,7 +320,9 @@ private:
     // find them. `detector_id` is ignored for an entry that takes none.
     void request_model_download(const std::string& id, const std::string& detector_id);
     bool mask_model_missing() const;
-    bool license_accepted(const std::string& family) const;
+    // Masks come straight from the tracker's .people.bin: no SAM model is
+    // reached, so nothing about one gates the run or shows in the panel.
+    bool gopro_bin_masking() const;    bool license_accepted(const std::string& family) const;
 
     // ---- screens ----
     void draw_menu_bar();
@@ -756,6 +768,12 @@ private:
     bool _mask_memory = false;
     int  _mask_detect_every = 1;
     int  _mask_memory_frames = 0;
+    // PrepJob's view gate, which searches only the views a tracked person can be
+    // in. Kept here for the reason above: they only mean anything to a run over
+    // many frames, and the preview segments one still frame.
+    int   _mask_scan_every = 1;
+    int   _mask_ray_stride = 6;
+    float _mask_merge_cos = 0.98f;
     // The static stencils are kept on the inputs themselves (PrepInput::
     // stencil); this only says whether the run is given them, so that turning
     // the option off and on again does not throw away what was drawn.

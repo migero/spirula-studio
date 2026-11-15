@@ -115,6 +115,40 @@ a lone one -- are an error rather than a cloud of zero size. The log line
 `Seed points drawn at random` gives the count, shape, centre and the three
 standard deviations it used.
 
+### Sky dome
+
+A clear sky has no keypoints to triangulate, so training starts with nothing
+above the horizon and the sky is left to the optimiser to invent. The Edit
+screen's Sky dome section (`src/data/SkyDome.h`) adds a hemisphere of synthetic
+points instead, and saves them with the reconstruction so the trainer finds
+them: the Edit screen's Open-in-trainer button already forces a save, and the
+trainer re-reads `points3D.bin` at every start.
+
+- **Centre:** the cameras' geometric median (`dsparse::geometric_median` over
+  the camera positions), so a few distant rig members cannot drag it aside.
+  Deleted cameras are not counted.
+- **Radius:** a percentile of the live keypoint distances from that centre,
+  **p99 by default**. The literal maximum is almost always a floater -- on one
+  360 walk it was 1401 m against a p99 of 57 m, a dome 25x the scene -- and
+  `100` is there for scenes with genuine far geometry. Points already deleted
+  are not measured, and neither are the dome's own points if a second is added.
+- **Detail:** icosphere subdivisions, each step quadrupling the count: 1313 at
+  4, 5185 at 5, 20609 at 6. Slightly over half of each sphere, since the
+  icosahedron has four vertices on the equator and is not top/bottom symmetric.
+- **Base:** level, at the centre's own height, so it is a disc there and not a
+  sphere reaching through the ground.
+- **Colour:** uniform sky blue `(135, 180, 220)`, the light-blue fallback the
+  Metashape script this replaces uses for points no photo showed.
+
+They are written with an **empty track**: no image saw them, so they join no
+track, are filtered by no track-length rule, and claim no keypoint. That is also
+how the trainer tells them from triangulated points -- `seed_splats()` takes
+its initial 4-NN scale over the triangulated ones only, since a dome's points
+sit metres from anything and in the mean would scale the whole scene up. COLMAP
+`points3D.bin` has no normal field, so the inward-facing normals the Metashape
+script writes have no representation here; the trainer derives splat
+orientation itself.
+
 ## Camera models
 
 Perspective (with full radial / tangential / thin-prism distortion),
@@ -616,8 +650,8 @@ fixed-geometry equirectangular camera model, which no wrong projection does.
 ### What it is unwrapped into
 
 `--360 faces` (the default) cuts **ten perspective views, five per lens**;
-`--360 equirect` makes one 2:1 panorama; the GUI offers the same two under
-"Unwrap into". (A MAX 2 is stitched already, so it gets **six** views instead
+`--360 corners` cuts **eight squares, four per lens**; `--360 equirect` makes
+one 2:1 panorama; the GUI offers the same three under "Unwrap into". (A MAX 2 is stitched already, so it gets **six** views instead
 -- see below.) Faces are the default because a MAX file is **not stitched**:
 the two lenses meet at azimuth +-90 degrees -- the centre line of the side
 faces -- with real parallax across that seam, and no single camera model
@@ -657,9 +691,40 @@ them; `--camera-mode single` then leaves three cameras, one per image shape.
 The pixel budget is 12.6 MP a frame at the default `S`, against 13.6 MP for the
 six-face cube this replaced.
 
+### Corners: four squares per lens
+
+`--360 corners` drops the view on the lens axis and keeps four **squares** per
+lens, so eight per frame and **one camera** instead of three -- every view is
+the same shape, so they share a single focal length with nothing to reconcile.
+It is not cheaper, though: a square is 90 degrees on both axes where a Faces
+side view is 45 on one, so the budget is **18.1 MP** a frame against Faces'
+12.6.
+
+Each square is **90 degrees** wide and centred **45 degrees** off its lens
+axis, and that is not a free parameter: it is the widest square whose inner
+edge lands exactly on the axis and whose outer edge and both corners land
+exactly on the 90-degree seam. Measured over every pixel, the worst is 89.98
+degrees at 90 (95 crosses by 2.5, 110 by 10), and `pano360_rays_test` asserts
+it, so widening the field of view fails the build's tests rather than quietly
+putting the other lens's pixels in a view.
+
+The price is coverage. Dropping the axial views leaves **3.11% of the sphere
+in no view**, against 0.12% for Faces -- four wedges between neighbouring views,
+widest at the rim. Nothing is distorted and nothing crosses the seam; the scene
+there simply has no photograph of it.
+
 `--360-size` sets `S` (the GUI has it under Advanced); the default is 1.125x
 the source face, 1504 px at 5.6K. Holding the density at the *centre* of a
 rectilinear face would take 4/pi = 1.27x, and the extra goes to the corners.
+
+`--360-sharpen` (0-100, default 0; the GUI has it under Advanced, below View
+size) masks the canvas before it is cut into views. `pano360_sharpen` is one
+pass over the frame instead of one per view, and the views then all see the
+same edge; 100 is 4x the edge contrast, the range the reference player's
+sharpen shader allows. Its taps are clamped per cube face and per side of the
+lens seam, because those pixels are not neighbours on the sphere, and a
+panorama wraps in azimuth instead. The preview reads the same setting, so what
+it shows is what the run writes.
 
 Ten views per frame multiply the image count, and the views of one frame share
 no features: they are held together by pairs across TIME, so pairing must stay
@@ -671,6 +736,22 @@ Equirectangular remains available and is one image per frame, but it puts both
 lenses into one spherical camera, seam and all, and reconstruction downsamples
 it to `--max-image-size` (1600 px for the learned front ends at `--quality
 high`) -- about 4.4 px per degree, against 16.7 for a 1504 px face.
+
+### Ray space
+
+`app/Pano360.h`'s `pano360_view_ray` and `pano360_ray_pixel` are a view's pixels
+and the sphere they look at, both ways -- the exact inverse pair of
+`pano360_remap`'s per-pixel step, so a ray taken from a pixel of one view and
+the pixel it maps to in another agree.
+
+A mask is a mask in that view's pixels, so the same person in another view is
+different pixels. A ray is not: it is where the person IS. That is what makes a
+person a single thing to find. Views overlap on 5.9% of the sphere, so a person
+near a face boundary is genuinely in two of them -- as one ray set it is found
+in both, without a second detection to reconcile, and neither face is left with
+half a mask and a seam-shaped hole. `pano360_rays_test` holds the round trip
+exact (the 0.03-degree rounding margin above is the only slack), and checks
+that no ray is dropped between two faces or wrapped onto a far edge.
 
 ### A MAX 2's views
 
@@ -876,3 +957,81 @@ state between them and silently degrades metrics.
 Dataset locations belong in arguments or environment variables. See the
 "Do not commit" section of [`../AGENTS.md`](../AGENTS.md) and
 `tools/check_private_paths.sh`.
+
+## GoPro tracking crop bridge
+
+With the built-in reconstruction engine selected, in **Remove moving or unwanted objects**,
+open the advanced options and enable
+**Use GoPro tracking crops for people and shadows**. Select SAM 3 and use a
+removal prompt such as `person; human shadow`. This requires original GoPro MAX
+4096×1344 dual-track video and Perspective or Corner extraction. Click prompts,
+keeping the prompted subject, and BiRefNet are not supported in this mode.
+
+The player renderer reads `<video filename>.people.bin`, including the `.360`
+extension in that name. Spirula starts one persistent `sphere-export-render`
+process for the selected source frame indices. The renderer returns perspective
+RGB crops, frame timestamps and camera matrices; SAM runs only in Spirula.
+Masks are projected into every overlapping dataset view and written as normal
+PNG masks, with black removing pixels. Person identities are not needed.
+No full equirectangular frames are saved or fed to SAM.
+
+The renderer is located beside the Spirula executable by default. It may be a
+symlink to the player build. An explicit renderer path or `GOPRO_PLAYER_RENDERER`
+can override this. Tracking files are found beside the source video, then in
+`dataset/outlines` beside the player's build directory. An explicit tracking
+folder overrides discovery. Missing or corrupt files fail with an error.
+
+Saved person contours and shadow ovals determine crop coverage; overlapping
+requests can merge. Missing tracking, including an empty detection frame, uses
+six overlapping views. Nonempty tracking can still miss an undetected person;
+this is an acceleration based on the saved detections, not an exhaustive search.
+SAM text masking runs independently for each moving crop. Its video memory is
+disabled because those crops change orientation. Sky/cloud feature masks still
+run on the existing dataset views when requested, so enabling those reduces the
+speed benefit. Existing dataset images are reused; bridge masks are regenerated
+on each run. Mask editor corrections are applied by the usual preparation pass.
+
+Projection accounts for the current Spirula EAC remap and the player's overlap
+mapping through source pixel coordinates. The images themselves are not changed.
+Lens parallax near the stitched overlap can still cause small boundary errors;
+inspect results and use the normal mask dilation/correction controls as needed.
+
+### Opening frames the tracker does not cover
+
+Several seconds of a capture usually pass before the GoPro tracker starts
+writing outlines, and every source frame before its first outline comes back
+from the renderer as a fallback crop. The mask stage skips masking those
+frames, reports the source frame the tracking coverage begins at, and then
+deletes the earlier images and their masks (and feature masks) so
+reconstruction never sees them. If the tracking file covers none of the
+extracted frames at all, the run stops with an error rather than leaving
+unmasked stills behind.
+
+The alternative is to trim explicitly: set the per-video **start** seconds in
+the GUI's source list (extracted frames are numbered from there), or give the
+command line `spirula sam extract --start <seconds>`.
+
+
+`tracking_crop_test` checks projection polarity, frustum clipping, unit rays and,
+with renderer/cache/video/model/output arguments, native SAM3 segmentation and
+projection into both view layouts. `tracking_prep_test` exercises the full
+preparation path with an existing extracted frame set. Both are optional CMake
+test targets. The real-video check covered selected moments, not a complete clip.
+
+### Reliable depth from 360 view overlap
+
+Native reconstruction marks automatically generated 360-view rigs as
+`kind: virtual-360` in the manifest. Crops from the same source frame remain
+available for feature matching and track completion, but cannot supply the
+baseline for triangulation. A point needs an acceptable triangulation angle
+between different source frames (or independent rigs). Creation, filtering,
+track merging and merged-model cleanup use this rule. Physical stereo rigs
+retain their existing same-frame triangulation behavior.
+
+This prevents crop-edge matches from producing tiny clouds alongside the camera
+path when lens calibration gives virtual views slightly different centres. It
+does not remove every possible mismatch across different frames. Existing
+reconstructions are not rewritten: rerun native reconstruction with the updated
+manifest to apply the rule. Images and masks can be reused. Manually assembled
+360 image folders need the same `virtual-360` rig kind in their manifest; generic
+folders do not prove which views came from the same panorama.

@@ -33,6 +33,9 @@ struct FrameLook {
     // source pixels and the plan turns the sphere itself.
     Pano360Layout eac;
     std::vector<Pano360View> views;
+    // pano360_sharpen's 0..100, applied to the canvas before the views are
+    // resampled. Preview and extraction read the same field.
+    int pano_sharpen = 0;
     // Fisheye circles side by side in one frame (packed_lens_count); two or
     // more are cut apart into cam0/, cam1/ ... as a multi-track file's are.
     int packed_lenses = 0;

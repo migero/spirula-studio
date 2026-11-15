@@ -45,6 +45,7 @@
 #include "sfm/core/Mask.h"
 #include "sfm/core/Matches.h"
 #include "sfm/core/SerialWorker.h"
+#include "sfm/core/SunPosition.h"
 #include "sfm/feature/Matcher.h"
 #include "sfm/feature/PairSelection.h"
 #include "sfm/feature/Pairing.h"
@@ -59,6 +60,7 @@
 #include "sfm/map/MetricGauge.h"
 #include "sfm/map/Orient.h"
 #include "sfm/map/SensorGauge.h"
+#include "sfm/map/SunHeading.h"
 #include "sfm/map/Merge.h"
 
 #include "i18n/TimeFormat.h"
@@ -339,6 +341,102 @@ void reportSensorGauge(size_t i, const SensorGaugeResult& r,
             L::num(r.tilt_sigma_deg, 2)});
 }
 
+// The heading a model levelled by gravity or by the cameras still lacks: the
+// player's stored sun, against the ephemeris for when and where it was shot.
+// `north` stays false when the sun does not fit this model.
+bool fixSunHeading(Reconstruction& rec, const SfmConfig& cfg,
+                   const std::vector<std::unique_ptr<LoadedCapture>>& caps, size_t model) {
+    if (cfg.sun_track.size() < 20 || caps.empty()) return false;
+    std::vector<SunSample> suns = cfg.sun_track;
+    std::sort(suns.begin(), suns.end(),
+              [](const SunSample& a, const SunSample& b) { return a.time < b.time; });
+    auto sun_at = [&](double t, Vec3& out) {
+        auto it = std::lower_bound(suns.begin(), suns.end(), t,
+                                   [](const SunSample& s, double x) { return s.time < x; });
+        if (it != suns.begin()) {
+            const auto prev = it - 1;
+            if (it == suns.end() || std::fabs(prev->time - t) <= std::fabs(it->time - t))
+                it = prev;
+        }
+        if (it == suns.end() || std::fabs(it->time - t) > 0.03) return false;
+        out = Vec3{it->x, it->y, it->z};
+        return out.norm() > 1e-9;
+    };
+    constexpr double kDeg = M_PI / 180.0;
+    for (const auto& lc : caps) {
+        const SensorCapture& cap = lc->cap;
+        if (!(cap.fps > 0) || !cap.timeline) continue;
+        // One lens's poses: the solved rotation absorbs which lens it was.
+        std::map<std::string, std::vector<std::pair<double, Mat3>>> by_dir;
+        for (const auto& kv : rec.images) {
+            const Image& im = kv.second;
+            if (!im.registered || !sensor_detail::underPrefix(im.name, cap.prefix)) continue;
+            const int idx = sensor_detail::stemIndex(im.name);
+            if (idx < 0) continue;
+            by_dir[sensor_detail::dirOf(im.name)].push_back(
+                {idx / cap.fps + 0.5 * cap.readout, im.pose.R});
+        }
+        if (by_dir.empty()) continue;
+        auto lens = by_dir.begin();
+        std::sort(lens->second.begin(), lens->second.end(),
+                  [](const std::pair<double, Mat3>& a, const std::pair<double, Mat3>& b) {
+                      return a.first < b.first;
+                  });
+        std::vector<Mat3> R;
+        std::vector<Vec3> dirs;
+        double t_ref = 0;
+        bool have_ref = false;
+        for (const auto& [t, Rt] : lens->second) {
+            Vec3 d;
+            if (!sun_at(t, d)) continue;
+            if (!have_ref) { t_ref = t; have_ref = true; }
+            R.push_back(Rt);
+            dirs.push_back(d * (1.0 / d.norm()));
+        }
+        if (dirs.size() < 20) continue;
+        // One fix gives both the clock and the place the ephemeris needs.
+        double unix0 = 0, lat = 0, lon = 0;
+        for (const TelemetryGps& g : cap.timeline->gpsFixes())
+            if (g.unix_time > 0) {
+                unix0 = g.unix_time - g.t;
+                lat = g.lat;
+                lon = g.lon;
+                break;
+            }
+        if (!(unix0 > 0)) continue;
+        const SunAzEl s = sunAzEl(unix0 + t_ref, lat, lon);
+        if (!s.valid || std::fabs(s.elevation_deg) > 85.0) continue;
+        const SunFit fit = fitSunDirection(R, dirs);
+        if (!fit.ok) continue;
+        const SunTurn turn = sunTurn(fit.dir, s);
+        const long long mi = (long long)model;
+        if (!turn.ok) {
+            L::warn(Tag::Orient, M::sun_declined,
+                    {mi, L::num(turn.elevation_err_deg, 2), (long long)fit.votes});
+            continue;
+        }
+        // A +Z turn lowers a compass azimuth by the same angle, so negate.
+        const double th = -turn.turn_deg * kDeg;
+        Sim3 T;
+        T.R = Mat3{std::cos(th), -std::sin(th), 0, std::sin(th), std::cos(th), 0, 0, 0, 1};
+        Vec3 c{0, 0, 0};
+        int n = 0;
+        for (const auto& kv : rec.images)
+            if (kv.second.registered) {
+                c = c + cameraCenter(kv.second.pose);
+                n++;
+            }
+        if (n) c = c * (1.0 / (double)n);
+        T.t = c - mul(T.R, c);
+        applySim3(rec, T);
+        L::out(Tag::Orient, M::sun_north,
+               {mi, L::num(turn.turn_deg, 2), L::num(turn.elevation_err_deg, 2),
+                (long long)fit.votes});
+        return true;
+    }
+    return false;
+}
+
 // The gauge each model is written in: the video's sensors, else the attitude
 // the images record, then a metric reference, else the orient frame -- each
 // where it fits. False when a metric frame was asked for and missed.
@@ -367,7 +465,9 @@ std::unique_ptr<TelemetryPriors> makeSensorPriors(const SfmConfig& cfg,
     for (const ImageEntry& im : db.images) names.push_back(im.name);
     SensorPriorOptions po;
     po.max_dt = cfg.sensor_max_dt;
-    po.gps_max_error = cfg.metric_gps != "none" && cfg.metric_max_error > 0 ? cfg.metric_max_error : 5.0;
+    // Not gated on metric_gps: that is the photographs' EXIF, and a video's own
+    // track is a reference whether or not the photographs carry one.
+    po.gps_max_error = cfg.metric_max_error > 0 ? cfg.metric_max_error : 5.0;
     po.gps_max_error_frac = cfg.metric_max_error_frac;
     po.verbose = !cfg.quiet;
     auto priors = std::make_unique<TelemetryPriors>(sensors.caps(), names, cam_ids, po);
@@ -496,9 +596,10 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
     std::vector<GroundFit> levelled(models.size());
 
     // `gauge[i]` is the state, not just the record: `oriented` and `metric` say
-    // what a source has already settled, and every source below reads them
-    // before touching what an earlier one answered.
+    // what a source has already settled, and every later source reads them.
+    // `north` is separate: a levelled model can still be turned.
     gauge.assign(models.size(), ModelGauge());
+    std::vector<char> north(models.size(), 0);
 
     // ---- the video's own sensors -----------------------------------------
     SensorCaptures own;
@@ -512,7 +613,7 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
         SensorGaugeOptions opt;
         opt.mode = cfg.sensor_gauge == "up" ? SensorMode::Up : SensorMode::Auto;
         opt.gps_full = cfg.metric_gps == "full";
-        opt.gps_max_error = gps ? cfg.metric_max_error : 5.0;
+        opt.gps_max_error = cfg.metric_max_error > 0 ? cfg.metric_max_error : 5.0;
         opt.gps_max_error_frac = cfg.metric_max_error_frac;
         opt.verbose = verbose;
         for (size_t i = 0; i < models.size(); i++) {
@@ -522,6 +623,7 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
             applySim3(models[i], r.T);
             gauge[i].oriented = true;
             gauge[i].up = "sensors";
+            north[i] = r.place_from_gps;
             if (r.metric) {
                 gauge[i].metric = true;
                 gauge[i].scale = r.scale_from_imu && r.scale_from_gps ? "imu+gps"
@@ -533,9 +635,7 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
     }
 
     // ---- the attitude each image records ---------------------------------
-    // A model the video's sensors levelled keeps their answer. `north` is what
-    // a horizontal fit's heading is compared against.
-    std::vector<char> north(models.size(), 0);
+    // A model the video's sensors levelled keeps their answer.
     const bool attitude = cfg.orient && cfg.exif_attitude != "none" && !imagedir.empty();
     for (size_t i = 0; i < models.size() && attitude; i++) {
         if (gauge[i].oriented) continue;
@@ -615,6 +715,7 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
         gauge[i].metric = true;
         gauge[i].scale = file ? "positions" : "gps";
         gauge[i].scale_sigma = fit.scale_unc;
+        north[i] = 1;   // the fit's heading is a metric reference's, not a guess
         // Horizontal fits scale, heading and place only, so which way is up is
         // still whatever `pre` left it as: the sensors, or the cameras.
         if (!flat) {
@@ -655,6 +756,14 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
                 L::num(std::sqrt(u / m), 4),
                 L::num(metricUpDisagreementDeg(models[i]), 2)});
     }
+
+    // ---- the sun the player stored -----------------------------------------
+    // A levelled model whose GPS gave no heading takes one from the sun; a
+    // model a reference already headed keeps that answer.
+    if (cfg.orient && !cfg.sun_track.empty())
+        for (size_t i = 0; i < models.size(); i++)
+            if (gauge[i].oriented && !north[i])
+                north[i] = fixSunHeading(models[i], cfg, loaded, i) ? 1 : 0;
 
     // ---- whatever no source settled ---------------------------------------
     // The only place that falls back on the cameras' mean up axis, so a model

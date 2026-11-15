@@ -320,6 +320,36 @@ int cmdMergeSelftest(int, char**) {
               "filterModel did not drop a point that reprojects nowhere");
     }
 
+    // Same-frame virtual views cannot create depth, even with fitted lens offsets.
+    {
+        RigTable rigs;
+        RigSpec rig;rig.name="panorama";rig.kind="virtual-360";
+        rig.members.resize(8);rig.frames={{0,1,2,3,4,5,6,7}};
+        rigs.rigs.push_back(rig);rigs.index(M);
+        Reconstruction single=buildModel(0,7);
+        size_t robs=0,rpts=0;
+        filterModel(single,4.0,1.5,robs,rpts,&rigs);
+        check(single.points3D.empty(),"one panorama must not supply its own depth baseline");
+        check(!rigs.depthPair(0,4),"same-frame virtual views cannot seed triangulation");
+        single=buildModel(0,7);filterModel(single,4.0,0.0,robs,rpts,&rigs);
+        check(single.points3D.empty(),"zero angle threshold still needs independent capture support");
+        rigs.rigs[0].kind="dual-fisheye";
+        Reconstruction physical=buildModel(0,7);
+        const auto original=physical.points3D.size();
+        filterModel(physical,4.0,1.5,robs,rpts,&rigs);
+        check(physical.points3D.size()==original,"physical stereo keeps same-frame support");
+        rigs.rigs[0].kind="virtual-360";
+        rigs.rigs[0].members.resize(4);rigs.rigs[0].frames={{0,1,2,3},{4,5,6,7}};
+        rigs.index(M);
+        Reconstruction moving=buildModel(0,7);
+        filterModel(moving,4.0,1.5,robs,rpts,&rigs);
+        check(moving.points3D.size()==original,"virtual views keep depth supported across time");
+        check(rigs.depthPair(0,4),"different video frames can seed triangulation");
+        std::vector<uint32_t> local(M,kNoImage);local[0]=0;local[1]=1;local[4]=2;
+        auto subset=rigs.subset(local,3);
+        check(!subset.depthPair(0,1)&&subset.depthPair(0,2),"atom subsets preserve capture identity");
+    }
+
     // ---- 9. a fold: two places written on top of each other (D45) ----
     //
     // The failure no other test here can see, because a fold is *self*-

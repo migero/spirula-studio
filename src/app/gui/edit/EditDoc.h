@@ -177,8 +177,9 @@ public:
     // that no floor should be fitted through.
     virtual const float* solidity() const { return nullptr; }
 
-    // Which way the people who took the photos thought was up, same frame:
-    // the mean of the cameras' own up axes. False without cameras.
+    // Which way is up, in the frame the layer holds. A gauge that fixed the
+    // model's orientation knows: +Z is up, from gravity. Without one, the mean
+    // of the cameras' up axes -- meaningless when they disagree, as a rig's do.
     virtual bool up_hint(float up[3]) const {
         (void)up;
         return false;
@@ -206,6 +207,20 @@ public:
 
     // ---- what the ops write through ----
     void set_alive(int64_t i, bool a);
+    // Rows that were never in the loaded file, appended (and, for undo, taken
+    // off the tail again). Indices of what was already there never move.
+    int64_t append_points(int layer, const std::vector<float>& positions,
+                       const uint8_t* rgb = nullptr);
+    void drop_appended(int layer, int64_t n);
+    // Told when rows come or go, so a subclass keeping its own copy of the
+    // cloud can follow. `first` is the index of the first row affected, and
+    // `rgb` is three bytes per row when the rows carried a colour.
+    virtual void rows_appended(int layer, int64_t first, int64_t count,
+                               const uint8_t* rgb) {}
+    virtual void rows_dropped(int layer, int64_t count) {}
+    // How many rows have been appended to `layer` since it was loaded, so a
+    // subclass that keeps its own copy of the cloud knows where they start.
+    int64_t appended_on(int layer) const;
     void set_selection(const std::vector<uint8_t>& w);
     void mark_geometry_dirty() { _geom_dirty = true; _display_dirty = true; _rev++; }
     void mark_display_dirty() { _display_dirty = true; _rev++; }
@@ -260,16 +275,19 @@ protected:
     // order the panel should offer them.
     void add_layer(const spirula::i18n::Msg& name, int64_t n,
                    std::vector<float> positions, std::vector<float> radius = {});
-    void set_source(std::string s) { _source = std::move(s); }
+void set_source(std::string s) { _source = std::move(s); }
     // The concrete document's half of publish(): `geometry` says the live set
     // changed, otherwise only the selection did.
     virtual void publish_impl(bool geometry) = 0;
 
 private:
+    void reframe(int layer);
     Layer& at(int i) { return _layers[(size_t)i]; }
     const Layer& at(int i) const { return _layers[(size_t)i]; }
 
     std::vector<Layer> _layers;
+    // Per layer, how many of its rows were appended rather than loaded.
+    std::vector<int64_t> _appended;
     int _cur = 0;
     std::string _source;
     spirula::Sim3 _placement;
@@ -295,6 +313,11 @@ private:
 std::unique_ptr<EditOp> make_hide_op(EditDoc& doc, bool invert);
 // Every hidden element back.
 std::unique_ptr<EditOp> make_reveal_op(EditDoc& doc);
+// The synthetic sky hemisphere: rows appended to a layer that no image saw.
+// `positions` is [n,3] in the viewport's frame, and undo takes the tail off.
+std::unique_ptr<EditOp> make_sky_dome_op(EditDoc& doc,
+                                         std::vector<float> positions,
+                                         std::vector<uint8_t> rgb);
 // A selection change, so that a mis-aimed lasso is one Ctrl+Z away like
 // everything else. Both sides are run-length encoded.
 std::unique_ptr<EditOp> make_select_op(EditDoc& doc, std::vector<uint8_t> next,

@@ -99,6 +99,7 @@ bool load_ffmpeg_frame(const PreviewSource& src, double at, int folder, int& w,
 
     const size_t view =
         std::min((size_t)std::max(folder, 0), src.look.views.size() - 1);
+    app::pano360_sharpen(rgb.data(), w, h, src.look.eac, src.look.pano_sharpen, 0);
     app::Pano360Remap map;
     app::pano360_remap(src.look.eac, src.look.views[view], map);
     std::vector<uint8_t> out((size_t)map.width * map.height * 3);

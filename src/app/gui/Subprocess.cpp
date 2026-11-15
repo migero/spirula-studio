@@ -566,6 +566,18 @@ bool ProcessReader::start(const std::vector<std::string>& argv,
         for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
         args.push_back(nullptr);
         execvp(args[0], args.data());
+        // An exec that fails has no way left to speak but the pipe itself:
+        // name errno, or the 127 that follows reads as a lost binary with no
+        // reason next to it.
+        char note[128];
+        std::snprintf(note, sizeof note, "spirula fork: execve %s: errno %d\n",
+                      args[0], errno);
+        const size_t note_len = std::strlen(note);
+        for (size_t off = 0; off < note_len;) {
+            const ssize_t w = ::write(STDERR_FILENO, note + off, note_len - off);
+            if (w <= 0) break;
+            off += (size_t)w;
+        }
         _exit(127);
     }
     close(out[1]);

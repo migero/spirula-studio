@@ -33,6 +33,10 @@ std::string resolve_sparse_dir(const std::string& path);
 struct SparseKeep {
     std::vector<uint8_t> points;            // 0 = drop
     std::vector<std::string> drop_images;   // file names, any path prefix
+    // Points no image saw -- the sky dome's. Appended after the kept rows with
+    // ids above the file's own and an empty track, so they seed training
+    // without joining a track or claiming a keypoint.
+    ColmapPoints3D append;
 };
 
 // The files as one editing session first found them. `keep` indexes THEIR
@@ -84,8 +88,10 @@ struct SparseStats {
 SparseStats read_sparse_stats(const std::string& dataset_dir);
 
 // A plain point cloud, for anything that has no reconstruction behind it.
+// `add`, when given, is written after the kept rows, in `moved`'s frame.
 void write_ply_points(const std::string& path, const double* xyz,
                       const uint8_t* rgb, int64_t n, const uint8_t* keep,
-                      const Sim3* moved = nullptr);
+                      const Sim3* moved = nullptr,
+                      const ColmapPoints3D* add = nullptr);
 
 }  // namespace spirula

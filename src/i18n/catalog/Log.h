@@ -2965,6 +2965,163 @@ SS_MSG(noun_images_masked,
     RU("замаскировано изображений"),
     TR("maskelenen görüntü"));
 
+SS_MSG(gopro_frame_crops,
+    EN("GoPro frame {0}: crops {1}, fallback {2}"),
+    JA("GoProフレーム{0}：クロップ{1}、フォールバック{2}"),
+    ZH_HANS("GoPro 帧 {0}：裁剪 {1}，回退 {2}"),
+    ZH_HANT("GoPro 影格 {0}：裁切 {1}，回退 {2}"),
+    KO("GoPro 프레임 {0}: 크롭 {1}, 폴백 {2}"),
+    DE("GoPro-Frame {0}: Crops {1}, Fallback {2}"),
+    FR("image GoPro {0} : recadrages {1}, repli {2}"),
+    ES("fotograma GoPro {0}: recortes {1}, reserva {2}"),
+    PT("fotograma GoPro {0}: recortes {1}, reserva {2}"),
+    IT("fotogramma GoPro {0}: ritagli {1}, fallback {2}"),
+    NL("GoPro-frame {0}: crops {1}, fallback {2}"),
+    RU("кадр GoPro {0}: обрезки {1}, резерв {2}"),
+    TR("GoPro karesi {0}: kırpmalar {1}, yedek {2}"));
+
+SS_MSG(gopro_coverage_from,
+    EN("GoPro tracking covers the video from source frame {0}"),
+    JA("GoProトラッキングはソースフレーム{0}から映像をカバーします"),
+    ZH_HANS("GoPro 跟踪从源帧 {0} 开始覆盖视频"),
+    ZH_HANT("GoPro 追蹤從源影格 {0} 開始涵蓋影片"),
+    KO("GoPro 트래킹은 소스 프레임 {0}부터 영상을 커버합니다"),
+    DE("GoPro-Tracking deckt das Video ab Video-Bild {0} ab"),
+    FR("le suivi GoPro couvre la vidéo à partir de l'image source {0}"),
+    ES("el seguimiento GoPro cubre el vídeo desde el fotograma fuente {0}"),
+    PT("o rastreio GoPro cobre o vídeo a partir do fotograma fonte {0}"),
+    IT("il tracking GoPro copre il video dal fotogramma sorgente {0}"),
+    NL("GoPro-tracking dekt de video vanaf bronframe {0}"),
+    RU("трекинг GoPro покрывает видео начиная с исходного кадра {0}"),
+    TR("GoPro takibi videoyu {0}. kaynak karesinden itibaren kapsar"));
+
+SS_MSG(gopro_untracked_removed,
+    EN("masks removed: {0}; images removed: {1}"),
+    JA("削除したマスク：{0}、削除した画像：{1}"),
+    ZH_HANS("已删除的遮罩：{0}，已删除的图像：{1}"),
+    ZH_HANT("已刪除的遮罩：{0}，已刪除的影像：{1}"),
+    KO("삭제된 마스크: {0}, 삭제된 이미지: {1}"),
+    DE("entfernte Masken: {0}, entfernte Bilder: {1}"),
+    FR("masques supprimés : {0}, images supprimées : {1}"),
+    ES("máscaras eliminadas: {0}, imágenes eliminadas: {1}"),
+    PT("máscaras removidas: {0}, imagens removidas: {1}"),
+    IT("maschere rimosse: {0}, immagini rimosse: {1}"),
+    NL("verwijderde maskers: {0}, verwijderde beelden: {1}"),
+    RU("удалено масок: {0}, удалено изображений: {1}"),
+    TR("silinen maskeler: {0}, silinen görüntüler: {1}"));
+
+SS_MSG(err_gopro_bin_missing,
+    EN("The tracker's people file was not found: looked beside the video at "
+       "{0}, and in the tracking BIN folder \"{1}\". Export it from the GoPro "
+       "Player, or point the BIN folder field at it."),
+    JA("トラッカーの people ファイルが見つかりません。動画の隣 {0} と追跡 BIN フォルダー"
+       "「{1}」を探しました。GoPro Player から書き出すか、BIN フォルダー欄で指定してください。"),
+    ZH_HANS("未找到跟踪器的 people 文件：已在视频旁的 {0} 和跟踪 BIN 文件夹“{1}”中查找。"
+            "请从 GoPro Player 导出，或在 BIN 文件夹栏中指定。"),
+    ZH_HANT("未找到追蹤器的 people 檔案：已在影片旁的 {0} 和追蹤 BIN 資料夾「{1}」中查找。"
+            "請從 GoPro Player 匯出，或在 BIN 資料夾欄中指定。"),
+    KO("트래커의 people 파일을 찾을 수 없습니다. 영상 옆 {0}과(와) 추적 BIN 폴더 \"{1}\"에서 "
+       "찾았습니다. GoPro Player에서 내보내거나 BIN 폴더 필드에 지정하세요."),
+    DE("Die People-Datei des Trackers wurde nicht gefunden: gesucht wurde neben dem "
+       "Video unter {0} und im Tracking-BIN-Ordner „{1}“. Aus dem GoPro Player "
+       "exportieren oder im BIN-Ordner-Feld angeben."),
+    FR("Le fichier people du tracker est introuvable : recherche effectuée à côté de "
+       "la vidéo dans {0} et dans le dossier BIN de suivi « {1} ». Exportez-le depuis "
+       "le GoPro Player ou indiquez-le dans le champ du dossier BIN."),
+    ES("No se encontró el archivo people del rastreador: se buscó junto al vídeo en {0} "
+       "y en la carpeta BIN de seguimiento \"{1}\". Expórtelo desde GoPro Player o "
+       "indíquelo en el campo de la carpeta BIN."),
+    PT("O ficheiro people do rastreador não foi encontrado: procurou-se junto ao vídeo "
+       "em {0} e na pasta BIN de rastreio \"{1}\". Exporte-o do GoPro Player ou "
+       "indique-o no campo da pasta BIN."),
+    IT("Il file people del tracker non è stato trovato: cercato accanto al video in {0} "
+       "e nella cartella BIN di tracking \"{1}\". Esportalo dal GoPro Player o "
+       "indicalo nel campo della cartella BIN."),
+    NL("Het people-bestand van de tracker is niet gevonden: gezocht naast de video op "
+       "{0} en in de tracking-BIN-map \"{1}\". Exporteer het vanuit de GoPro Player of "
+       "geef het op in het BIN-mapveld."),
+    RU("Файл people трекера не найден: выполнялся поиск рядом с видео в {0} и в папке "
+       "BIN отслеживания \"{1}\". Экспортируйте его из GoPro Player или укажите в поле "
+       "папки BIN."),
+    TR("İzleyicinin people dosyası bulunamadı: videonun yanında {0} ve takip BIN "
+       "klasöründe \"{1}\" içinde arandı. GoPro Player'dan dışa aktarın veya BIN "
+       "klasörü alanında belirtin."));
+
+SS_MSG(err_gopro_bin_unusable,
+    EN("The tracker's people file could not be used: {0}: {1}"),
+    JA("トラッカーの people ファイルを利用できません：{0}：{1}"),
+    ZH_HANS("无法使用跟踪器的 people 文件：{0}：{1}"),
+    ZH_HANT("無法使用追蹤器的 people 檔案：{0}：{1}"),
+    KO("트래커의 people 파일을 사용할 수 없습니다: {0}: {1}"),
+    DE("Die People-Datei des Trackers ist nicht verwendbar: {0}: {1}"),
+    FR("Le fichier people du tracker est inutilisable : {0} : {1}"),
+    ES("No se puede usar el archivo people del rastreador: {0}: {1}"),
+    PT("O ficheiro people do rastreador não pode ser usado: {0}: {1}"),
+    IT("Il file people del tracker non è utilizzabile: {0}: {1}"),
+    NL("Het people-bestand van de tracker is onbruikbaar: {0}: {1}"),
+    RU("Файл people трекера не может быть использован: {0}: {1}"),
+    TR("İzleyicinin people dosyası kullanılamıyor: {0}: {1}"));
+
+SS_MSG(gopro_bridge_fallback,
+    EN("GoPro tracking crops are not available; the views are masked again by plain detection"),
+    JA("GoProトラッキングクロップが使えないため、ビューを通常の検出でマスクします"),
+    ZH_HANS("GoPro 跟踪裁剪不可用，将改用普通检测对视角重新遮罩"),
+    ZH_HANT("GoPro 追蹤裁切不可用，將改用普通偵測對視角重新遮罩"),
+    KO("GoPro 트래킹 크롭을 사용할 수 없어 뷰를 일반 검출로 마스킹합니다"),
+    DE("GoPro-Tracking-Crops nicht verfügbar; die Ansichten werden erneut mit normaler Erkennung maskiert"),
+    FR("les recadrages de suivi GoPro sont indisponibles ; les vues sont remasquées par détection simple"),
+    ES("los recortes de seguimiento GoPro no están disponibles; se enmascaran de nuevo las vistas con detección simple"),
+    PT("os recortes de rastreio GoPro estão indisponíveis; as vistas voltam a ser mascaradas por deteção simples"),
+    IT("i ritagli di tracking GoPro non sono disponibili; le viste vengono mascherate di nuovo con rilevamento semplice"),
+    NL("GoPro-tracking-bijsnedes zijn niet beschikbaar; de beelden worden opnieuw met gewone detectie gemaskeerd"),
+    RU("кадры отслеживания GoPro недоступны; виды снова маскируются обычным обнаружением"),
+    TR("GoPro takip kırpımları kullanılabilir değil; görünümler normal algılamayla yeniden maskeleniyor"));
+
+SS_MSG(gopro_untracked_left,
+    EN("frames left unmasked, without tracking coverage: {0}"),
+    JA("未検出で残したフレーム：{0}"),
+    ZH_HANS("未遮罩帧（无跟踪覆盖）：{0}"),
+    ZH_HANT("未遮罩影格（無追蹤涵蓋）：{0}"),
+    KO("마스킹되지 않은 프레임(추적 커버리지 없음): {0}"),
+    DE("unmaskierte Frames ohne Tracking-Abdeckung: {0}"),
+    FR("images laissées sans masque, hors couverture de suivi : {0}"),
+    ES("fotogramas sin máscara, sin cobertura de seguimiento: {0}"),
+    PT("fotogramas sem máscara, fora da cobertura de rastreio: {0}"),
+    IT("fotogrammi lasciati senza maschera, fuori copertura tracking: {0}"),
+    NL("frames zonder masker, buiten de tracking-dekking: {0}"),
+    RU("кадров без маски, вне зоны отслеживания: {0}"),
+    TR("maske bırakılmayan kareler (takip kapsamı dışında): {0}"));
+
+SS_MSG(err_gopro_no_coverage,
+    EN("the GoPro tracking file covers none of the extracted frames"),
+    JA("GoProトラッキングファイルは抽出フレームを1つもカバーしていません"),
+    ZH_HANS("GoPro 跟踪文件没有覆盖任何已提取的帧"),
+    ZH_HANT("GoPro 追蹤檔未涵蓋任何已擷取的影格"),
+    KO("GoPro 트래킹 파일은 추출된 프레임을 하나도 커버하지 않습니다"),
+    DE("die GoPro-Tracking-Datei deckt keinen der extrahierten Frames ab"),
+    FR("le fichier de suivi GoPro ne couvre aucune image extraite"),
+    ES("el archivo de seguimiento GoPro no cubre ningún fotograma extraído"),
+    PT("o ficheiro de rastreio GoPro não cobre nenhum fotograma extraído"),
+    IT("il file di tracking GoPro non copre nessun fotogramma estratto"),
+    NL("het GoPro-trackingbestand dekt geen enkel geëxtraheerd frame"),
+    RU("файл трекинга GoPro не покрывает ни одного извлечённого кадра"),
+    TR("GoPro takip dosyası çıkarılan karelerin hiçbirini kapsamıyor"));
+
+SS_MSG(err_gopro_remove_failed,
+    EN("an untracked frame's file could not be removed"),
+    JA("未カバーのフレームのファイルを削除できませんでした"),
+    ZH_HANS("未能删除未覆盖帧的文件"),
+    ZH_HANT("無法刪除未涵蓋影格的檔案"),
+    KO("커버되지 않는 프레임의 파일을 삭제하지 못했습니다"),
+    DE("die Datei eines nicht abgedeckten Frames konnte nicht entfernt werden"),
+    FR("le fichier d'une image non couverte n'a pas pu être supprimé"),
+    ES("no se pudo eliminar el archivo de un fotograma no cubierto"),
+    PT("não foi possível remover o ficheiro de um fotograma não coberto"),
+    IT("impossibile rimuovere il file di un fotogramma non coperto"),
+    NL("het bestand van een niet-gedekt frame kon niet worden verwijderd"),
+    RU("не удалось удалить файл кадра вне покрытия трекинга"),
+    TR("kapsam dışı karenin dosyası silinemedi"));
+
 SS_MSG(copying_photos,
     EN("photos: {0} -> {1}"),
     JA("写真: {0} -> {1}"),

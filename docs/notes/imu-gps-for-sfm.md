@@ -265,7 +265,7 @@ reference positions (`map/MetricGauge.h`, D74/D75). What is missing:
 | want | source | needs sync | needs a moving camera | what it replaces |
 |---|---|---|---|---|
 | **up** (2 DOF: roll and pitch of the world) | accelerometer average, or GRAV/attitude | no | no | the `--orient` guess, which fails on a capture tilted on purpose or carried upside down |
-| **heading** (1 DOF: yaw) | GPS track, magnetometer, CORI on cameras that init to north | loose | GPS: yes | nothing today |
+| **heading** (1 DOF: yaw) | GPS track, the player's stored sun, magnetometer | loose | GPS: yes | nothing today |
 | **scale** (1 DOF) | GPS over a path, or accelerometer pre-integration | GPS: loose; IMU: tight | yes | `--metric-positions` from an outside source |
 | **place** (3 DOF) | GPS | loose | no | `--metric-gps` |
 
@@ -293,6 +293,13 @@ pose is wrong, which is a free registration audit.
 under a degree of camera rotation), no requirement on motion, one extrinsic
 rotation per camera model. It works on a single frame in principle and on
 the whole model in practice.
+
+The three sources are not equal. GoPro's GRAV is the camera's own fused
+horizon, one direction per frame; the specific force carries whatever the
+camera is accelerating by, which on a handheld walk is several degrees. On
+the 531 s GoPro MAX walk of section 2.2 the votes' spread was 6.25 deg from
+the accelerometer and 1.28 deg from GRAV, so `SensorTimeline::upAt` takes
+GRAV whenever the file writes it and falls back to the accelerometer.
 
 **The calibration.** `R_ci` is unknown for every camera here. It is
 observable from any reconstruction of a capture that was not held level:
@@ -444,8 +451,9 @@ passes, because they share the calibration and the same unknowns:
 - `core/SensorTimeline.h` answers time-indexed queries over one file's
   telemetry: the IMU rotation between two instants (from the gyro, or from the
   fused attitude where there is no gyro), the up direction at an instant (the
-  specific force averaged over half a second after each sample is de-rotated
-  into the frame at that instant), a pre-integration over an interval
+  camera's own fused gravity where the file carries one, else the specific
+  force averaged over half a second with each sample de-rotated into the frame
+  at that instant), a pre-integration over an interval
   (`core/Preintegration.h`, Forster et al. with first-order bias Jacobians),
   and the GPS position at an instant, interpolated between the first
   appearances of distinct fixes. Frame time is the source frame index in the
@@ -473,7 +481,12 @@ passes, because they share the calibration and the same unknowns:
   per group, with Huber weights, numerical Jacobians and a per-family sigma
   taken from the closed forms' residuals. Two scale sources combine by
   information; beyond three sigma of disagreement the more certain one wins
-  and the run says so.
+  and the run says so. The losing source gives up only its **scale**: the
+  GPS fit's heading and place still turn the model north and put it on the
+  track, which is what a walk whose IMU and receiver disagree by a few
+  percent needs (measured on the 531 s GoPro MAX walk in section 2.2: the
+  scales were 9.6 sigma apart and the model had been left in an arbitrary
+  yaw, 177 deg from north).
 
 Measured on a 118 s Insta360 X5 walk (231 frames, two lenses, 1 fps):
 0.26 s for the whole fit; IMU clock offset -14.6 ms; the extrinsic from 114
@@ -556,6 +569,29 @@ carries IMU, GPS, both or nothing (read on its own thread, `TelemetryProbe`),
 each photo folder says how many of its files have an EXIF position, and a
 **Sensors** block under Advanced holds both controls: `--sensor-gauge` for the
 video track and `--metric-gps` for the photographs.
+
+### 5.7 The sun as a heading
+
+A GoPro player writes the sun's direction beside a 360 video, one per frame, in
+the camera-locked `.people.camera.bin` companion (`app/GoProBin.h`).
+`map/SunHeading.h` pairs those directions with the reconstruction's poses,
+solves the fixed rotation from the video's camera frame into the model and the
+sun's model-frame direction with the same alternating Procrustes as the gravity
+consensus, and `core/SunPosition.h` (NOAA's solar position) says what the
+azimuth should be; the difference is a turn about +Z. The elevation is the gate
+-- a model that is not level, or a sun that is not the one it claims, shows a
+wrong elevation and is left alone (`sunTurn`, 4 degrees). It runs when the GPS
+track gave no heading, which is the case the track cannot answer; the CLI
+attaches the track automatically when the bin sits beside the video.
+
+Measured on the 531 s GoPro MAX walk of section 2.2, starting from the model
+the old build wrote 177.2 deg off north: one turn of 172.80 deg, the sun's
+elevation 0.18 deg from the ephemeris over 1584 frames, and a final heading
+4.3 deg from the GPS's (which is the better answer when a track exists, because
+this capture's bin has **one** manual sun pick carried through CORI -- its
+azimuth follows CORI's drift, and the fit's median residual is 3.3 deg).
+Per-frame picks, which the player stores as keyframes, would be the heading
+source for a capture whose GPS positions are refused.
 
 ## 6. Improving the reconstruction itself
 

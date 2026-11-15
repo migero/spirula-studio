@@ -109,6 +109,9 @@ struct Masker::Impl {
     std::vector<std::string> pos, neg, feat;
     MaskOptions opts;
     int64_t frame = 0;
+    // The view the last frame belonged to; empty means the caller never said,
+    // and then nothing is ever reset.
+    std::string camera;
     // Seeds not yet applied, in frame order, and the instance each object was
     // given when its first seed landed.
     std::vector<SeedPrompt> pending;
@@ -277,9 +280,30 @@ bool Masker::init(const MaskOptions& o, std::string& error) {
     return true;
 }
 
+bool Masker::runFeatures(const nn::Image& image, sam::Mask& features) {
+    auto& s=*impl_;
+    auto options=s.opts;
+    auto pos=std::move(s.pos), neg=std::move(s.neg);
+    s.pos.clear();s.neg.clear();
+    s.opts.video=false;s.opts.seeds.clear();s.opts.keep_prompted=false;
+    bool ok=false;sam::Mask unused;
+    try { ok=run(image,unused,nullptr,-1,&features); }
+    catch(const std::exception& e) { s.error=e.what(); }
+    s.opts=std::move(options);s.pos=std::move(pos);s.neg=std::move(neg);
+    return ok;
+}
+
 bool Masker::run(const nn::Image& image, sam::Mask& out, sam::Result* overlay_out,
-                 int64_t frame_id, sam::Mask* features_out) {
+                 int64_t frame_id, sam::Mask* features_out, const std::string& camera) {
     Impl& s = *impl_;
+    if (!camera.empty() && s.opts.video && camera != s.camera) {
+        for (auto& t : s.trackers) t->reset();
+        if (s.visual) s.visual->reset();
+        // The instance ids a tracker's reset hands back repeat, so the object
+        // map has to go with it or a seed refines whatever now holds that id.
+        s.instance_of.clear();
+    }
+    if (!camera.empty()) s.camera = camera;
     if (frame_id < 0) frame_id = s.frame;
     if (features_out) *features_out = sam::Mask{};
     // No decoder passes for a second mask nobody reads.
