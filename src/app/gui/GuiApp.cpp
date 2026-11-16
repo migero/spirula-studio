@@ -283,6 +283,26 @@ GuiApp::GuiApp() {
                                   : std::vector<std::string>{ext},
                       start_dir, false, suggested);
         });
+    _compare.edit().set_mask_model_ui(
+        [this](std::string& model_id, std::string& detector_id) {
+            draw_mask_model_picker(model_id, &detector_id, _download,
+                                   [&model_id, &detector_id, this] {
+                request_model_download(model_id, detector_id);
+            });
+        },
+        [this](const std::string& model_id, const std::string& detector_id) {
+            return cached_mask_model(model_id, detector_id);
+        });
+    _compare.edit().set_mask_device_gate([this](std::string& device,
+                                                std::string& error) {
+        if (!freeze_native_device()) {
+            error = _native_device_error.empty() ? msg::no_device_found.get()
+                                                 : _native_device_error;
+            return false;
+        }
+        device = _native_device_uuid;
+        return true;
+    });
     using RPick = gui::render::RenderSession::Pick;
     _compare.render().set_pick(
         [this](RPick kind, const std::string& start, const std::string& suggested) {

@@ -548,6 +548,7 @@ void EditSession::draw_panel() {
 
             if (ui::CollapsingHeader(amsg::sec_attribute)) draw_attribute_section(full);
             draw_sky_section(d, full);
+            draw_mask_section(d, full);
             if (d.colours_available()) {
                 if (ui::CollapsingHeader(amsg::sec_colour)) {
                     const ToolRow& k = tool_table()[(int)ToolId::Eyedropper];
@@ -730,9 +731,12 @@ void EditSession::draw_panel() {
     ImGui::EndChild();
 
     if (busy()) {
-        const bool detecting = _marker_busy.load();
-        const int total = detecting ? _marker_total.load() : work_total();
-        const int done = detecting ? _marker_done.load() : work_done();
+        const bool masking = _mask_busy.load();
+        const bool detecting = _marker_busy.load() || masking;
+        const int total = masking ? _mask_total.load()
+                                  : detecting ? _marker_total.load() : work_total();
+        const int done = masking ? _mask_done.load()
+                                 : detecting ? _marker_done.load() : work_done();
         // A file write must finish before another edit can start.
         const bool can_stop = !_save_busy.load();
         const float bw = can_stop
@@ -744,7 +748,9 @@ void EditSession::draw_panel() {
         if (total > 1) {
             _work_clock.work(now, (double)done / (double)total);
             ui::ProgressBar(_work_clock.fraction(), ImVec2(-bw, 0),
-                            detecting ? mmsg::marker_progress : msg::saving_progress,
+                            masking ? msg::mask_progress
+                                    : detecting ? mmsg::marker_progress
+                                                : msg::saving_progress,
                             {(long long)done, (long long)total});
         } else {
             ui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-bw, 0),

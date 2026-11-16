@@ -8,6 +8,7 @@
 // knows nothing about editing and this knows nothing about how the panel
 // renders.
 
+#include "app/gui/ModelCache.h"
 #include "app/gui/ProgressClock.h"
 #include "app/gui/ViewportInput.h"
 #include "app/gui/edit/Attributes.h"
@@ -116,6 +117,23 @@ public:
     void draw_panel();
     // The sky dome's own controls, under the Select tab.
     void draw_sky_section(EditDoc& d, float full);
+    // Select by mask: a text prompt over a sample of the dataset's cameras
+    // (EditMaskSelect.cpp). The picker and the device gate are the owner's.
+    void draw_mask_section(EditDoc& d, float full);
+    using MaskModelUi = std::function<void(std::string& model_id,
+                                           std::string& detector_id)>;
+    using MaskModelFilesFn =
+        std::function<MaskModelFiles(const std::string& model_id,
+                                     const std::string& detector_id)>;
+    using SamDeviceGate = std::function<bool(std::string& device,
+                                             std::string& error)>;
+    void set_mask_model_ui(MaskModelUi draw, MaskModelFilesFn files) {
+        _mask_model_ui = std::move(draw);
+        _mask_model_files = std::move(files);
+    }
+    void set_mask_device_gate(SamDeviceGate gate) {
+        _mask_device_gate = std::move(gate);
+    }
     // One line under the viewport: the active tool and its keys.
     void draw_status();
 
@@ -143,7 +161,8 @@ public:
     bool frame_bounds(double centre[3], double& radius) override;
     // A long job is in flight; editing waits for it.
     bool busy() const {
-        return _comp_busy.load() || _save_busy.load() || _attr_busy.load() || _marker_busy.load();
+        return _comp_busy.load() || _save_busy.load() || _attr_busy.load() ||
+               _marker_busy.load() || _mask_busy.load();
     }
     // Give up on it. The worker checks between cells, so this is not instant.
     void cancel_work();
@@ -202,6 +221,8 @@ private:
     void commit_adjustable(const std::vector<uint8_t>& w, const std::string& label);
     void pick_colour(float px, float py, bool append);
     void run_colour(bool commit);
+    void start_mask_select();
+    void take_mask_result();
 
     void apply_stroke(const ShapeStroke& s, const ViewportInput& in);
     // Compute the selection a recipe describes and either record it as a step
@@ -374,6 +395,23 @@ private:
     float _sky_percentile = 99.0f;
     PointsDoc::DomeFit _sky_fit;
     bool _sky_added = false;
+
+    // Select by mask (EditMaskSelect.cpp). The prompt is English whatever the
+    // interface says: it goes to Grounding DINO's text encoder.
+    std::string _mask_prompt = "sky";
+    std::string _mask_model_id, _mask_detector_id;
+    int _mask_cameras = 24;
+    float _mask_min_frac = 0.2f;
+    std::string _mask_status;
+    bool _mask_status_err = false;
+    MaskModelUi _mask_model_ui;
+    MaskModelFilesFn _mask_model_files;
+    SamDeviceGate _mask_device_gate;
+    std::thread _mask_worker;
+    std::atomic<bool> _mask_busy{false};
+    std::atomic<int> _mask_done{0}, _mask_total{0};
+    std::vector<uint8_t> _mask_result;
+    std::string _mask_error;
 
     int _tab = 0;                     // 0 select, 1 transform
     bool _tab_force = false;

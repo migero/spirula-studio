@@ -86,11 +86,13 @@ void EditSession::close() {
     if (_save_worker.joinable()) _save_worker.join();
     if (_attr_worker.joinable()) _attr_worker.join();
     if (_marker_worker.joinable()) _marker_worker.join();
+    if (_mask_worker.joinable()) _mask_worker.join();
     _cancel = false;
     _comp_busy = false;
     _save_busy = false;
     _attr_busy = false;
     _marker_busy = false;
+    _mask_busy = false;
     _markers.clear();
     _markers_file.clear();
     _marker_dataset = {};
@@ -640,6 +642,7 @@ void EditSession::poll() {
     }
     if (!_save_busy.load() && _save_worker.joinable()) take_save_result();
     if (!_marker_busy.load() && _marker_worker.joinable()) take_marker_result();
+    if (!_mask_busy.load() && _mask_worker.joinable()) take_mask_result();
     if (busy()) {
         if (_panel) _panel->invalidate();
         return;
