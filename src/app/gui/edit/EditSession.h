@@ -401,7 +401,9 @@ private:
     std::string _mask_prompt = "sky";
     std::string _mask_model_id, _mask_detector_id;
     int _mask_cameras = 24;
-    float _mask_min_frac = 0.2f;
+    // 1.0 = every frame the point projects into must mask it: overlap
+    // subtracts. Lower it to tolerate sky hidden behind foreground.
+    float _mask_min_frac = 1.0f;
     std::string _mask_status;
     bool _mask_status_err = false;
     MaskModelUi _mask_model_ui;
