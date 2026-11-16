@@ -45,6 +45,10 @@ void fill_options(sam::MaskOptions& o, const std::string& text,
     o.keep_prompted = true;
     o.max_size = kMaskCap;
     o.detect_every = 1;
+    // The shared default grows each region by 5% of its bounding box to
+    // cover a tight outline's halo; for voting that margin lands on trees
+    // and the lens surround and wrongly subtracts points, so no growth.
+    o.dilate_ratio = 0.0f;
 }
 
 nn::Image decode_capped(const std::string& file, sfm::ExifTransform& turn) {
