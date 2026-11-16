@@ -379,23 +379,14 @@ SeedSplats seed_splats(const ColmapPoints3D& pts, const TrainConfig& cfg,
         for (int d = 0; d < 3; d++)
             s.means[i*3 + d] = (float)pts.xyz[pick[i]*3 + d];
 
-    // log(scale_init * sqrt(mean d^2 of 4-NN)) over the DISTINCT points, and
-    // over the TRIANGULATED ones only: a repeat is its own zero-distance
-    // neighbor, and a dome's sit metres from anything.
+    // log(scale_init * sqrt(mean d^2 of 4-NN)) over the DISTINCT points; a
+    // repeat is its own zero-distance neighbor. A dome point uses its own
+    // spacing (x2 for overlap): real-point size is ~1000x too small up there.
     std::vector<float> nn = knn::mean_knn_dist(s.means, n_distinct, 4);
-    if ((int64_t)pts.trackless.size() >= n_src) {
-        // One characteristic distance for the synthetic points, from the real
-        // ones, so a dome point starts the size a real point would.
-        std::vector<float> real;
-        real.reserve((size_t)n_distinct);
+    if ((int64_t)pts.trackless.size() >= n_src)
         for (int64_t i = 0; i < n_distinct; i++)
-            if (!pts.trackless[(size_t)pick[i]]) real.push_back(nn[(size_t)i]);
-        if (real.empty()) real = nn;
-        std::sort(real.begin(), real.end());
-        const float typical = real[real.size() / 2];
-        for (int64_t i = 0; i < n_distinct; i++)
-            if (pts.trackless[(size_t)pick[i]]) nn[(size_t)i] = typical;
-    }
+            if (pts.trackless[(size_t)pick[i]] && nn[(size_t)i] > 0.0f)
+                nn[(size_t)i] *= 2.0f;
     for (int64_t i = 0; i < num; i++) {
         float d = nn[i % n_distinct];
         // Scatter the repeats through the neighborhood they copy.
