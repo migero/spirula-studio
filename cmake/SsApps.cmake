@@ -179,8 +179,8 @@ if(SS_BUILD_SAM)
          ${SS_SRC}/app/FrameExtract.cpp
          ${SS_SRC}/app/FrameGps.cpp
          ${SS_SRC}/app/FrameDecodeFfmpeg.cpp
-         ${SS_SRC}/app/FfmpegVideo.cpp
-         ${SS_SRC}/app/gui/Subprocess.cpp)
+         ${SS_SRC}/app/FfmpegVideo.cpp)
+    # Subprocess.cpp comes in via ss_mask_worker -> ss_inference_worker.
     list(APPEND SS_TOOL_DEFS SS_TOOL_SAM=1 SS_HAVE_BLUR_GPU=1)
     list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/LicenseCli.cpp)
     list(APPEND SS_TOOL_LIBS ss_mask_worker ss_sam ss_blur)
@@ -297,6 +297,8 @@ if(SS_BUILD_GUI)
     file(GLOB SS_GUI_SOURCES CONFIGURE_DEPENDS
         ${SS_SRC}/app/gui/*.cpp ${SS_SRC}/app/gui/edit/*.cpp
         ${SS_SRC}/app/gui/render/*.cpp ${SS_SRC}/app/gui/mask/*.cpp)
+    # Subprocess.cpp compiles inside ss_inference_worker; keep it single-copy.
+    list(REMOVE_ITEM SS_GUI_SOURCES ${SS_SRC}/app/gui/Subprocess.cpp)
     list(APPEND SS_TOOL_SOURCES ${SS_GUI_SOURCES} ${SS_SRC}/app/FfmpegVideo.cpp)
     list(APPEND SS_TOOL_DEFS SS_TOOL_GUI=1)
     list(APPEND SS_TOOL_LIBS imgui_glfw OpenGL::GL)
@@ -406,8 +408,10 @@ if(SS_SEPARATE_TOOLS)
                       ${SS_SRC}/app/cli/sam_extract.cpp ${SS_SRC}/app/FrameExtract.cpp
                       ${SS_SRC}/app/FrameGps.cpp
                      ${SS_SRC}/app/FrameDecodeFfmpeg.cpp ${SS_SRC}/app/FfmpegVideo.cpp
-                     ${SS_SRC}/app/gui/Subprocess.cpp ${SS_SRC}/app/cli/LicenseCli.cpp)
+                     ${SS_SRC}/app/cli/LicenseCli.cpp)
         set(_sam_lib ss_mask_worker ss_sam ss_blur ss_license)
+        # Subprocess.cpp rides in through ss_mask_worker -> ss_inference_worker.
+        list(REMOVE_ITEM _sam_src )
         if(SS_ENABLE_PATENTED)
             list(APPEND _sam_src ${SS_SRC}/app/FrameDecodeVulkan.cpp)
             list(APPEND _sam_lib ss_video)
@@ -478,7 +482,6 @@ add_executable(model_download_test
     ${SS_SRC}/app/tests/model_download_test.cpp
     ${SS_SRC}/app/gui/ModelCache.cpp
     ${SS_SRC}/app/gui/ProgressClock.cpp
-    ${SS_SRC}/app/gui/Subprocess.cpp
     ${SS_SRC}/app/AppPaths.cpp)
 ss_configure_app(model_download_test)
 target_link_libraries(model_download_test PRIVATE ss_license)
@@ -589,7 +592,7 @@ ss_configure_app(frame_mask_test)
 add_executable(ffmpeg_probe_test
     ${SS_SRC}/app/tests/ffmpeg_probe_test.cpp
     ${SS_SRC}/app/FfmpegVideo.cpp
-    ${SS_SRC}/app/gui/Subprocess.cpp)
+    )
 ss_configure_app(ffmpeg_probe_test)
 
 # The GUI files with no GUI in them: the plan that decides which steps of a
@@ -598,7 +601,7 @@ ss_configure_app(ffmpeg_probe_test)
 if(SS_BUILD_GUI)
     add_executable(command_argv_test
         ${SS_SRC}/app/gui/tests/command_argv_test.cpp
-        ${SS_SRC}/app/gui/Subprocess.cpp)
+        )
     ss_configure_app(command_argv_test)
 
     add_executable(dense_live_preview_test
@@ -709,8 +712,7 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/FrameMask.cpp
         ${SS_SRC}/app/FrameMaskSvg.cpp
         ${SS_SRC}/app/FrameLook.cpp
-        ${SS_SRC}/app/gui/Subprocess.cpp
-        ${SS_SRC}/app/gui/HeifPhoto.cpp)
+            ${SS_SRC}/app/gui/HeifPhoto.cpp)
     ss_configure_app(match_matrix_editor_test)
     target_link_libraries(match_matrix_editor_test PRIVATE imgui_glfw OpenGL::GL)
     target_compile_definitions(match_matrix_editor_test PRIVATE SS_TOOL_SFM=1)
@@ -775,8 +777,7 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/gui/PrepProgress.cpp
         ${SS_SRC}/app/gui/ProgressClock.cpp
         ${SS_SRC}/app/gui/DatasetRecord.cpp
-        ${SS_SRC}/app/gui/Subprocess.cpp
-        ${SS_SRC}/app/gui/mask/MaskLayer.cpp
+            ${SS_SRC}/app/gui/mask/MaskLayer.cpp
         ${SS_SRC}/app/FrameMask.cpp
         ${SS_SRC}/app/FrameMaskSvg.cpp
         ${SS_SRC}/app/FrameLook.cpp
@@ -830,8 +831,7 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/FfmpegVideo.cpp
         ${SS_SRC}/app/gui/PrepProgress.cpp
         ${SS_SRC}/app/gui/ProgressClock.cpp
-        ${SS_SRC}/app/gui/Subprocess.cpp
-        ${SS_SRC}/app/gui/mask/MaskLayer.cpp
+            ${SS_SRC}/app/gui/mask/MaskLayer.cpp
         ${SS_SRC}/app/FrameMask.cpp
         ${SS_SRC}/app/FrameMaskSvg.cpp
         ${SS_SRC}/app/FrameLook.cpp
@@ -877,7 +877,8 @@ if(SS_BUILD_SAM)
     add_executable(tracking_crop_test EXCLUDE_FROM_ALL
         ${SS_SRC}/app/tests/tracking_crop_test.cpp
         ${SS_SRC}/app/TrackingCropBridge.cpp ${SS_SRC}/app/Pano360.cpp
-        ${SS_SRC}/app/AppPaths.cpp ${SS_SRC}/app/gui/Subprocess.cpp)
+        ${SS_SRC}/app/gui/Subprocess.cpp
+        ${SS_SRC}/app/AppPaths.cpp)
     target_include_directories(tracking_crop_test PRIVATE ${SS_SRC})
     target_link_libraries(tracking_crop_test PRIVATE ss_sam)
     set_property(TARGET tracking_crop_test PROPERTY CXX_STANDARD 17)

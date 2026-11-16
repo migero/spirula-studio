@@ -576,9 +576,9 @@ bool extract_frames_at(const std::string& input, const FrameLook& look_in,
         std::vector<nn::Image> img(np);
         for (size_t k = 0; k < np; k++)
             if (!pipe[k]->toImage(held[k], conv, img[k], error)) return false;
-        std::vector<nn::Image> out_img;
-        if (!compose_frame(look, folder, img, map, canvas, out_img, error)) return false;
-        on_frame(out_img, index);
+        nn::Image out;
+        if (!compose_frame(look, folder, img, map, canvas, out, error)) return false;
+        on_frame(out, index);
         return true;
     };
 
