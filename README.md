@@ -8,7 +8,7 @@
 ![GitHub Releases](https://img.shields.io/github/v/release/harry7557558/spirula-studio)&nbsp;
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 
-[**Download**](https://github.com/harry7557558/spirula-studio/releases/) &#8226;
+[**Download**](https://github.com/migero/spirula-studio/releases/) &#8226;
 [**Build from Source**](#build-from-source) &#8226;
 [**Gallery**](#gallery) &#8226;
 [**Web Viewer**](https://harry7557558.github.io/spirula-studio/viewer/)
@@ -41,6 +41,45 @@ Spirula Studio trains 3D Gaussian Splatting models &ndash; from raw photo/video 
 
 - Depth/normal, meshing, skybox, linear color... And more.
 
+## What this fork adds
+
+This fork tracks [harry7557558/spirula-studio](https://github.com/harry7557558/spirula-studio)
+(the merge base is `8949092e`, 2026.11.12) and adds a GoPro 360 capture and person-masking
+workflow on top of it. Everything below is in addition to upstream's features; nothing
+upstream is removed.
+
+- **GoPro `.bin` telemetry loading** (`GoProBin`, `spirula`'s `--bin` path) &ndash; reads the
+  `.people.camera.bin` / `.people.bin` telemetry file recorded next to a GoPro MAX video,
+  so person detection does not need a model at all. Its reader is covered by
+  `gopro_bin_test`.
+
+- **Person masking from telemetry** &ndash; the GoPro bin's person rasters are projected into
+  every unwrap view (`GoProMask`, `PersonRays`), tracked across views in a person store
+  with a search gate (`PersonStore`, `ScanIndex`) so only the views a person can appear
+  in are re-masked, and handed to the mask editor through the crop bridge
+  (`TrackingCropBridge`). Mask settings (prompts, detector, view gate, GoPro fields)
+  round-trip through the dataset record.
+
+- **More 360&deg; unwrap modes** on top of upstream's face ring &ndash; **Fisheye** (two
+  full-lens fisheye views, the whole 180&deg; circle each) and **Corners** (eight square
+  views, none on the axis, tilted 45&deg;), plus an unsharp-mask **sharpen** pass on the
+  EAC canvas before the views are resampled, and the ray-space pair
+  (`pano360_view_ray` / `pano360_ray_pixel`) that pixel<->sphere conversions reuse.
+
+- **GPS-spaced frame extraction** &ndash; frames sampled by travelled distance instead of a
+  rate (`--gps-distance`, `gps_spacing_m`), per-video start offsets, and GPS metadata
+  written to the extracted frames.
+
+- **Sun-heading priors in SfM** &ndash; alongside upstream's GPS/attitude machinery, the sun
+  azimuth/elevation read from telemetry (`SunPosition`) fits a world sun direction
+  (`SunHeading`, an alternating Procrustes over the tracks) that fixes the yaw gravity
+  cannot see. `sfm_sun_test` covers it.
+
+- **Sky-dome editing** in the GUI's edit tools, with its own tests.
+
+Details: [docs/datasets.md](docs/datasets.md) (GoPro/360 capture, ray space) and
+[docs/notes/imu-gps-for-sfm.md](docs/notes/imu-gps-for-sfm.md).
+
 ## News
 
 - **September 23, 2026: Editing and rendering features** &ndash; Editing features for 3DGS models, sparse reconstructions, meshes, and masks have been added, along with support for exporting image and video renders.
@@ -56,7 +95,7 @@ Spirula Studio trains 3D Gaussian Splatting models &ndash; from raw photo/video 
 
 ## Download
 
-Binaries for Windows, Linux, and macOS can be downloaded from [Releases page](https://github.com/harry7557558/spirula-studio/releases/). Simply select the one for your platform, download and unzip, and double click to open the GUI.
+Binaries for Windows, Linux, and macOS can be downloaded from [Releases page](https://github.com/migero/spirula-studio/releases/). Simply select the one for your platform, download and unzip, and double click to open the GUI.
 
 If you are training on remote/cloud GPUs, you may use the CLI &ndash; Run `spirula --help` for details. By default, `spirula train` command will serve a viewer on an HTTP port, one you can forward over ssh and view training progress in your web browser.
 
