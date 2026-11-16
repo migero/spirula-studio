@@ -405,8 +405,7 @@ static bool measure_dome(const PointsDoc& d, int subdivisions, double percentile
 }
 
 PointsDoc::DomeFit PointsDoc::measure_sky_dome(int subdivisions, double percentile,
-                                              std::string* error) const {
-    DomeFit out;
+                                              std::string* error) const {    DomeFit out;
     if (!measure_dome(*this, subdivisions, percentile, error, nullptr, nullptr,
                       &out.radius, &out.points))
         return DomeFit{};
@@ -422,6 +421,10 @@ PointsDoc::DomeFit PointsDoc::add_sky_dome(int subdivisions, double percentile,
     if (!measure_dome(*this, subdivisions, percentile, error, &layer_pos, &rgb,
                       &out.radius, &out.points))
         return DomeFit{};
+    // The fallback colour the dome ships with is one flat value; the images
+    // the cameras actually took give the shell its per-point colour, which is
+    // what the seed's SH starts from. Unhooked (the tests), keep the fallback.
+    if (auto& f = dome_colour()) f(_ds, _ds.train_to_normalized, layer_pos, rgb);
     // One op, so undo is one Ctrl+Z. rows_appended keeps _ds.points in step.
     run(make_sky_dome_op(*this, layer_pos, rgb));
     out.present = true;

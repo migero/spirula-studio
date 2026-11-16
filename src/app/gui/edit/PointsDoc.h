@@ -24,6 +24,17 @@ public:
     // last argument is one flag per live camera, for the frustum highlight.
     using Show = std::function<void(const ParsedDataset&, const PostSplitCameras&,
                                     const uint8_t* selected)>;
+    // Colours a new dome from the dataset's images (EditMaskSelect.cpp).
+    // Unset in the tests, which link no image decoder: the fallback colour.
+    using DomeColour = std::function<void(const ParsedDataset&,
+                                          const std::array<float, 16>&,
+                                          const std::vector<float>&,
+                                          std::vector<uint8_t>&)>;
+    static void set_dome_colour(DomeColour f) { dome_colour() = std::move(f); }
+    static DomeColour& dome_colour() {
+        static DomeColour f;
+        return f;
+    }
     PointsDoc(ParsedDataset ds, PostSplitCameras post,
               const std::string& source, const std::string& dataset_dir,
               Show show);

@@ -33,6 +33,100 @@ namespace {
 // size, so a 5.3K frame does not cost a 5.3K model pass or a 5.3K mask.
 constexpr int kMaskCap = 1600;
 
+// A new sky dome, coloured from the images (PointsDoc::set_dome_colour):
+// each point is projected into a small camera sample and the pixels it lands
+// on are averaged; `layer_pos` is in the view frame, `to_parsed` to cameras'.
+void colour_dome_from_images(const ParsedDataset& ds,
+                             const std::array<float, 16>& to_parsed,
+                             const std::vector<float>& layer_pos,
+                             std::vector<uint8_t>& rgb) {
+    const int64_t nc = ds.num_cameras;
+    const int64_t n = (int64_t)layer_pos.size() / 3;
+    if (nc < 1 || n < 1 || ds.image_filenames.size() != (size_t)nc) return;
+    const int pick = (int)std::min<int64_t>(nc, 6);
+
+    // Decode the sample once, capped: sampling a 5.3K frame needs no more.
+    constexpr int kSampleCap = 512;
+    std::vector<nn::Image> frames;
+    std::vector<camhost::Camera> cams;
+    std::vector<int32_t> cams_idx;
+    for (int i = 0; i < pick; i++) {
+        const int32_t c = (int32_t)((2 * (int64_t)i + 1) * nc / (2 * pick));
+        sfm::ExifTransform turn;
+        nn::Image img = app::load_upright(ds.image_filenames[(size_t)c], "",
+                                          std::nullopt, colorspace::Exposure{},
+                                          turn);
+        if (img.empty()) continue;
+        const int longer = std::max(img.width, img.height);
+        if (longer > kSampleCap)
+            img = nn::resize_image(img, img.width * kSampleCap / longer,
+                                   img.height * kSampleCap / longer);
+        frames.push_back(std::move(img));
+        cams_idx.push_back(c);
+        camhost::Camera k;
+        k.model = ds.camera_models[(size_t)c];
+        k.width = ds.widths[(size_t)c];
+        k.height = ds.heights[(size_t)c];
+        k.fx = ds.intrins[(size_t)c*4];     k.fy = ds.intrins[(size_t)c*4+1];
+        k.cx = ds.intrins[(size_t)c*4+2];   k.cy = ds.intrins[(size_t)c*4+3];
+        if ((int64_t)ds.dist_coeffs.size() >= nc * 8)
+            for (int j = 0; j < 8; j++)
+                k.dist[j] = ds.dist_coeffs[(size_t)c * 8 + (size_t)j];
+        cams.push_back(k);
+    }
+
+    std::vector<int32_t> hits((size_t)n, 0);
+    std::vector<uint32_t> sum((size_t)n * 3, 0);
+    for (size_t f = 0; f < frames.size(); f++) {
+        const int32_t c = cams_idx[f];
+        const nn::Image& img = frames[f];
+        const uint8_t* px = img.data.data();
+        const int iw = img.width, ih = img.height;
+        const float* m = &ds.c2w[(size_t)c * 12];
+#pragma omp parallel for schedule(static, 256)
+        for (int64_t p = 0; p < n; p++) {
+            const double q[3] = {layer_pos[(size_t)p*3], layer_pos[(size_t)p*3+1],
+                                 layer_pos[(size_t)p*3+2]};
+            double world[3];
+            for (int r = 0; r < 3; r++) {
+                const float* row = to_parsed.data() + r * 4;
+                world[r] = (double)row[0]*q[0] + (double)row[1]*q[1] +
+                           (double)row[2]*q[2] + row[3];
+            }
+            const double d[3] = {world[0] - m[3], world[1] - m[7], world[2] - m[11]};
+            // OpenGL camera-to-world: the camera looks down its own -z, and
+            // the lens maths wants +z forward and +y down.
+            const double ray[3] = {
+                m[0]*d[0] + m[4]*d[1] + m[8]*d[2],
+                -(m[1]*d[0] + m[5]*d[1] + m[9]*d[2]),
+                -(m[2]*d[0] + m[6]*d[1] + m[10]*d[2])};
+            double uv[2];
+            if (!camhost::ray_in_frame(cams[f], ray, uv)) continue;
+            int sx = (int)(uv[0] * (float)iw / (float)cams[f].width);
+            int sy = (int)(uv[1] * (float)ih / (float)cams[f].height);
+            sx = std::clamp(sx, 0, iw - 1);
+            sy = std::clamp(sy, 0, ih - 1);
+            const uint8_t* s = px + ((size_t)sy * iw + sx) * 3;
+            hits[(size_t)p]++;
+            for (int r = 0; r < 3; r++)
+                sum[(size_t)p * 3 + (size_t)r] += s[r];
+        }
+    }
+    for (int64_t p = 0; p < n; p++) {
+        if (hits[(size_t)p] == 0) continue;
+        for (int r = 0; r < 3; r++)
+            rgb[(size_t)p * 3 + (size_t)r] =
+                (uint8_t)(sum[(size_t)p * 3 + (size_t)r] / hits[(size_t)p]);
+    }
+}
+
+// This file only spirula links, so the registration lives here; the tests
+// that link PointsDoc.cpp keep the fallback colour.
+const bool _wire_dome_colour = [] {
+    PointsDoc::set_dome_colour(colour_dome_from_images);
+    return true;
+}();
+
 // Prompted objects come out white; the mask is read per camera, never
 // tracked, so each frame is segmented on its own.
 void fill_options(sam::MaskOptions& o, const std::string& text,
@@ -120,6 +214,9 @@ void EditSession::draw_mask_section(EditDoc& d, float full) {
     if (ui::Button(msg::mask_run, ImVec2(full, 0))) start_mask_select();
     ImGui::EndDisabled();
     ui::help_on_hover(msg::mask_run_help);
+    ImGui::BeginDisabled(_mask_view.empty());
+    if (ui::Button(msg::mask_show_masks)) _mask_show_preview = true;
+    ImGui::EndDisabled();
 
     if (busy_here) {
         ui::Text(msg::mask_progress,
@@ -180,16 +277,8 @@ void EditSession::draw_mask_preview() {
     ui::TextWrapped(msg::mask_preview_legend);
 
     const float cell = px(260.0f);
-    const float pad = ImGui::GetStyle().ItemSpacing.x;
-    float row = 0.0f;
     for (size_t i = 0; i < _mask_view.size(); i++) {
         const MaskThumb& t = _mask_view[i];
-        if (i) {
-            if (row + pad + cell <= ImGui::GetContentRegionAvail().x)
-                ImGui::SameLine();
-            else
-                row = 0.0f;
-        }
         ThumbTex* tt = nullptr;
         for (auto& e : texs)
             if (e.camera == t.camera) { tt = &e; break; }
@@ -206,8 +295,11 @@ void EditSession::draw_mask_preview() {
         if (!tt->tex.ready()) continue;
         const float s = cell / (float)t.w;
         ImGui::Image(tt->tex.id(), ImVec2(cell, (float)t.h * s));
-        ui::TextDisabledRaw(("#" + std::to_string(t.camera + 1)).c_str());
-        row += cell + pad;
+        // Wrap when the next thumbnail would not fit beside this one.
+        if (i + 1 < _mask_view.size() &&
+            ImGui::GetContentRegionAvail().x >=
+                ImGui::GetStyle().ItemSpacing.x + cell)
+            ImGui::SameLine();
     }
     ImGui::End();
 }
@@ -258,7 +350,6 @@ void EditSession::start_mask_select() {
     }
     _mask_view.clear();
     _mask_run_id++;
-    _mask_show_preview = true;
     _mask_done = 0;
     _mask_total = pick;
     _mask_busy = true;

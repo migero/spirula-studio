@@ -688,6 +688,21 @@ SS_MSG(mask_preview_legend,
     RU("Выбранные камеры так, как их видел модель; затенено там, где текст совпал."),
     TR("Örneklenen kameralar modelin gördüğü gibi; istemin tuttuğu yerler gölgeli."));
 
+SS_MSG(mask_show_masks,
+    EN("Show generated masks"),
+    JA("生成マスクを表示"),
+    ZH_HANS("显示生成的掩码"),
+    ZH_HANT("顯示產生的遮罩"),
+    KO("생성된 마스크 표시"),
+    DE("Erzeugte Masken zeigen"),
+    FR("Afficher les masques générés"),
+    ES("Mostrar máscaras generadas"),
+    PT("Mostrar máscaras geradas"),
+    IT("Mostra maschere generate"),
+    NL("Gegenereerde maskers tonen"),
+    RU("Показать созданные маски"),
+    TR("Üretilen maskeleri göster"));
+
 SS_MSG(mask_cancelled,
     EN("Cancelled."),
     JA("キャンセルしました。"),

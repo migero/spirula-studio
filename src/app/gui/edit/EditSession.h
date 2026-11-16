@@ -419,7 +419,7 @@ private:
     std::mutex _mask_thumb_mutex;
     std::vector<MaskThumb> _mask_thumbs;   // the worker appends finished ones
     std::vector<MaskThumb> _mask_view;     // the GUI's copy, drained per frame
-    bool _mask_show_preview = true;
+    bool _mask_show_preview = false;
     int _mask_run_id = 0;
     MaskModelUi _mask_model_ui;
     MaskModelFilesFn _mask_model_files;
