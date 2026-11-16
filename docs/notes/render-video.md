@@ -62,8 +62,14 @@ projects beside it (`copy_moved_projects`) while the originals stay.
 
 *Up* comes from the dataset when there is one (the parsers' levelling guess,
 `ParsedDataset::normalized_rotation`, found through the run's `config.json`
-and moved by its `scene_transform.json`). A model nothing levels offers *Take
-up from the view*. Up decides how an orbit turns, how an aimed camera stays
+and moved by its `scene_transform.json`). A point cloud's is the one its
+pane shows: the guess while *auto-level* is on, else the file's own +Z --
+off by default for a frame that was measured or saved from the editor. A
+model turned in the editor was levelled by hand against the pane, so its up
+is the pane's, not the guess turned along with it (`RenderSession::scene_up`).
+Until a second key is laid out up follows all of these as they change
+(`follow_scene_up`); after that it turns with the keys. A model nothing
+levels offers *Take up from the view*. Up decides how an orbit turns, how an aimed camera stays
 level and which way the sweep travels. An orbit started from a view steeper
 than 60 degrees is tipped to 30, since from overhead it would only spin.
 
@@ -164,6 +170,13 @@ The settings refit on letting go, as long as the keys are still the fit's.
 
 ## One frame
 
+Orthographic is available for photos, videos and frame sequences. Its FOV uses
+the same reference distance as the viewport; that distance is saved with the
+lens in project world units and interpolated with the zoom. Capturing a view
+preserves its framing, including when models have different normalizations or
+the whole project is scaled. Orthographic lenses have no distortion, and both
+the splat renderer and the mesh/point preview cull geometry behind the camera.
+
 `FrameRenderer` draws each model with the renderer the viewer already uses,
 at the output size:
 
@@ -232,7 +245,9 @@ it gives the dataset's own cameras, held while an operator runs, times the
 panel's slider. A click hits any drawn line or axis.
 The camera's own picture sits in a resizable corner, fills the view, or sits
 beside it: then the pane's controls run the whole width and the view and the
-picture share the row under them, a splitter between.
+picture share the row under them, a splitter between. In both full and split
+views, dragging on the picture turns the camera, right-drag slides, the wheel
+moves and Ctrl+wheel zooms.
 
 ## Transitions
 

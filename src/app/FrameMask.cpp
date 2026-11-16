@@ -4,7 +4,7 @@
 
 #include "app/FrameLook.h"
 #include "core/CubicBezier.h"
-#include "core/ExrImage.h"
+#include "core/ImageFile.h"
 #include "core/PolygonFill.h"
 
 #include "external/stb_image.h"
@@ -99,11 +99,11 @@ struct Gray {
 Gray load_gray(const std::string& path) {
     Gray g;
     int comp = 0;
-    if (exr::is_exr(path)) {
-        exr::Info info;
-        exr::Options opt;
+    if (imagefile::handles(path)) {
+        imagefile::Info info;
+        imagefile::Options opt;
         opt.channels = 1;
-        if (!exr::decode_srgb8(path, opt, info, g.px).empty()) return Gray{};
+        if (!imagefile::decode_srgb8(path, opt, info, g.px).empty()) return Gray{};
         g.w = info.width;
         g.h = info.height;
         return g;
@@ -740,9 +740,9 @@ std::string format_mask_shapes(const std::vector<MaskShape>& shapes) {
 
 bool image_size(const std::string& path, int& width, int& height) {
     int comp = 0;
-    if (exr::is_exr(path)) {
-        exr::Info info;
-        if (!exr::probe(path, info).empty()) return false;
+    if (imagefile::handles(path)) {
+        imagefile::Info info;
+        if (!imagefile::probe(path, info).empty()) return false;
         width = info.width;
         height = info.height;
         return true;
@@ -753,9 +753,10 @@ bool image_size(const std::string& path, int& width, int& height) {
 bool load_rgb(const std::string& path, int& width, int& height,
               std::vector<uint8_t>& out) {
     int comp = 0;
-    if (exr::is_exr(path)) {
-        exr::Info info;
-        if (!exr::decode_srgb8(path, exr::Options(), info, out).empty()) return false;
+    if (imagefile::handles(path)) {
+        imagefile::Info info;
+        if (!imagefile::decode_srgb8(path, imagefile::Options(), info, out).empty())
+            return false;
         width = info.width;
         height = info.height;
         return true;
@@ -1046,23 +1047,34 @@ void intersect_with_file(std::vector<uint8_t>& px, int w, int h,
     }
 }
 
+// The mask already at `path` reads as these pixels. Rewriting it anyway would
+// only move its modification time, which is what `spirula sfm` checks feature
+// files against.
+bool mask_file_holds(const std::string& path, const std::vector<uint8_t>& px,
+                     int w, int h) {
+    int mw = 0, mh = 0;
+    std::vector<uint8_t> m;
+    return load_stencil(path, mw, mh, m) && mw == w && mh == h && m == px;
+}
+
 }  // namespace
 
 std::map<std::string, std::vector<std::string>> group_frames_by_camera(
-    const std::string& dir, const std::string& skip_dir) {
+    const std::string& dir, const std::vector<std::string>& skip_dirs) {
     std::map<std::string, std::vector<std::string>> groups;
     std::error_code ec;
-    const std::string skip =
-        skip_dir.empty() ? std::string()
-                         : fs::path(skip_dir).lexically_normal().generic_string() + "/";
+    std::vector<std::string> skips;
+    for (const std::string& s : skip_dirs)
+        if (!s.empty()) skips.push_back(fs::path(s).lexically_normal().generic_string() + "/");
     const fs::path root(dir);
     for (fs::recursive_directory_iterator it(
              root, fs::directory_options::skip_permission_denied |
                        fs::directory_options::follow_directory_symlink, ec), end;
          !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec) || !is_image_file(it->path())) continue;
-        if (!skip.empty() &&
-            it->path().lexically_normal().generic_string().rfind(skip, 0) == 0)
+        const std::string at = it->path().lexically_normal().generic_string();
+        if (std::any_of(skips.begin(), skips.end(),
+                        [&](const std::string& s) { return at.rfind(s, 0) == 0; }))
             continue;
         // Lexical: fs::relative resolves symlinks, and an images/ of links
         // into a raw capture then relativizes to "../../<capture>/...", which
@@ -1077,7 +1089,7 @@ std::map<std::string, std::vector<std::string>> group_frames_by_camera(
 
 int64_t apply_frame_stencil(const FrameStencilRun& run,
                             const FrameStencilSinks& sinks, std::string& error) {
-    const auto groups = group_frames_by_camera(run.image_dir, run.skip_dir);
+    const auto groups = group_frames_by_camera(run.image_dir, run.skip_dirs);
     if (groups.empty()) {
         error = run.image_dir;
         return -1;
@@ -1163,6 +1175,13 @@ int64_t apply_frame_stencil(const FrameStencilRun& run,
                 const Item& it = items[merges[(size_t)k]];
                 std::vector<uint8_t> px = cache.at({it.w, it.h, it.key_turn}).px;
                 intersect_with_file(px, it.w, it.h, it.src, run.flip_merge);
+                if (mask_file_holds(it.dst, px, it.w, it.h)) {
+                    if (sinks.progress) {
+                        std::lock_guard<std::mutex> lk(sink_mu);
+                        sinks.progress(seen + (++done), total);
+                    }
+                    continue;
+                }
                 // Masks gathered next to the images are HARD LINKS to the ones
                 // the photos came with; writing over one would edit the user's
                 // file. Unlink first, so this only ever adds a file.

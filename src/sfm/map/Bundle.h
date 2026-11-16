@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
@@ -30,6 +31,7 @@ namespace sfm {
 
 struct BundleOptions {
     RealCfg real = RealCfg::F64;
+    bool fix_rotations = false;
     int max_iters = 25;
     bool verbose = false;
     // Canonical uuid:<hex> of the device this solve runs on; "" = the shared
@@ -48,6 +50,9 @@ struct BundleOptions {
     // 0 keeps the solver defaults (the final refinement passes do).
     double rtol = 0;
     int patience = 0;
+    // SolverOptions::gradient_tol and metres_per_unit; 0 = no gradient stop.
+    double gradient_tol = 0;
+    double metres_per_unit = 1;
     // Refine each camera's principal point, or hold it where the setup put it
     // (the image centre, unless something measured otherwise). COLMAP's
     // refine_principal_point, false there and here.
@@ -91,7 +96,7 @@ struct BundleOptions {
     // outlive one solve. The caller owns it and must keep (real, loss) fixed
     // across calls on the same context. Null = scoped context per call.
     VkContext* shared_ctx = nullptr;
-    // Host worker threads, for the `cpu` scalar; 0 = hardware_concurrency.
+    // Host worker threads, for the `cpu` scalar; 0 = hardware_threads().
     int threads = 0;
     // Rigs (sfm/core/Rig.h): with a table, every frame whose members have an
     // established calibration is one pose block and the member extrinsics are
@@ -395,6 +400,7 @@ inline BundleLayout buildBundle(Reconstruction& rec, const BundleOptions& bopt) 
 inline SolverOptions bundleSolverOptions(const BundleOptions& bopt) {
     SolverOptions sopt;
     sopt.real = bopt.real;
+    sopt.fix_rotations = bopt.fix_rotations;
     sopt.max_iters = bopt.max_iters;
     sopt.verbose = bopt.verbose;
     sopt.device_selector = bopt.device_selector;
@@ -403,6 +409,8 @@ inline SolverOptions bundleSolverOptions(const BundleOptions& bopt) {
     sopt.loss_param = bopt.loss_param;
     if (bopt.rtol > 0) sopt.rtol = bopt.rtol;
     if (bopt.patience > 0) sopt.patience = bopt.patience;
+    sopt.gradient_tol = bopt.gradient_tol;
+    sopt.metres_per_unit = bopt.metres_per_unit;
     if (bopt.solver == "dense") sopt.solver = SolverSel::Dense;
     else if (bopt.solver == "cg") sopt.solver = SolverSel::CG;
     sopt.over_budget_throws = bopt.over_budget_throws;
@@ -458,18 +466,21 @@ struct BundleRun {
     double t_init = 0, t_solve = 0;
 };
 
-// Solve `P` in place, moving to the host if the device fails. The device solve
-// checkpoints `P` every few seconds (SolverOptions::checkpoint), so the host
-// picks up where it stopped instead of from the start.
-inline BundleRun solveBundle(BAProblem& P, SolverOptions sopt, VkContext* shared) {
+// Solve `P` in place, on the host from the device's last checkpoint if the
+// device fails. With `rebuild` (makes `P` anew) the device solve frees P's
+// tables once uploaded, and a host solve takes a rebuilt copy.
+inline BundleRun solveBundle(BAProblem& P, SolverOptions sopt, VkContext* shared,
+                             const std::function<BAProblem()>& rebuild = {}) {
     BundleRun r;
     if (P.num_obs >= baHostObsThreshold().load()) sopt.real = RealCfg::CPU;
     SolverCheckpoint ck;
     sopt.checkpoint = &ck;
+    bool released = false;
     auto attempt = [&] {
         auto t0 = std::chrono::steady_clock::now();
         BundleSolver solver(P, sopt, shared);
         solver.init();
+        if (rebuild) released = solver.releaseHostTables() || released;
         auto t1 = std::chrono::steady_clock::now();
         solver.solve();
         auto t2 = std::chrono::steady_clock::now();
@@ -484,6 +495,15 @@ inline BundleRun solveBundle(BAProblem& P, SolverOptions sopt, VkContext* shared
     } catch (const VkError& e) {
         if (!vkErrorIsResourceFailure(e.result)) throw;
         noteBaDeviceFailure(e, P.num_obs);
+        if (released) {
+            BAProblem fresh = rebuild();
+            fresh.poses = std::move(P.poses);
+            fresh.exts = std::move(P.exts);
+            fresh.intr = std::move(P.intr);
+            fresh.points = std::move(P.points);
+            fresh.priors = P.priors;
+            P = std::move(fresh);
+        }
         sopt.real = RealCfg::CPU;
         sopt.checkpoint = nullptr;
         if (ck.iterations > 0) {
@@ -515,7 +535,8 @@ inline double runGlobalBA(Reconstruction& rec, const BundleOptions& bopt) {
     if (P.num_images < 2) return 0;
     double t_build = prof_lap();
 
-    const BundleRun run = solveBundle(P, bundleSolverOptions(bopt), bopt.shared_ctx);
+    const BundleRun run = solveBundle(P, bundleSolverOptions(bopt), bopt.shared_ctx,
+                                      [&] { return buildBundle(rec, bopt).P; });
     const SolverStats& stats = run.stats;
     const double t_init = run.t_init, t_solve = run.t_solve;
     prof_lap();
@@ -528,16 +549,23 @@ inline double runGlobalBA(Reconstruction& rec, const BundleOptions& bopt) {
     g_map_prof.ba_write += t_write;
     g_map_prof.n_ba++;
     g_map_prof.n_ba_iters += stats.iterations;
+    char grad[64] = "";
+    if (!stats.gradient_norms.empty())
+        std::snprintf(grad, sizeof grad, ", gradient %.3e%s", stats.gradient_norms.back(),
+                      stats.gradient_stop ? " (stop)" : "");
     if (MapProf::enabled())
         slog::diag(slog::Tag::Map,
                    "[prof] BA #%ld: %u img %u pt %u obs | build %.3f init %.3f solve %.3f "
-                   "write %.3f s | %d LM iters, %s%s",
+                   "write %.3f s | %d LM iters, %s%s%s | prior %.3f -> %.3f, %d prior-driven, "
+                   "final damping %.1e, cost %.6e -> %.6e%s",
                    (long)g_map_prof.n_ba, P.num_images, P.num_points, P.num_obs, t_build, t_init,
-                   t_solve, t_write, stats.iterations, stats.solver,
+                   t_solve, t_write, stats.iterations, stats.solver, stats.jac32 ? " fp32-J" : "",
                    stats.cg_solves ? (" " + std::to_string((int)std::lround(
                                                  stats.cg_iters_total / stats.cg_solves)) +
                                       " its/solve").c_str()
-                                   : "");
+                                   : "",
+                   stats.prior_initial, stats.prior_final, stats.prior_steps,
+                   stats.final_damping, stats.initial_cost, stats.final_cost, grad);
     return stats.final_cost;
 }
 

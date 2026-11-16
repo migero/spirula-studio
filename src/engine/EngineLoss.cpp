@@ -49,18 +49,15 @@ static void _alloc_grad_buffers() {
         return;
     }
 
-    // Block-wise quantized gradient accumulation (non-FPBO, grad-quant path).
-    // Per-splat-block bounds: one float2 per 256 splats (n_bounds = ceil(N/256)).
-    // 3dgs/mip quantize all six attributes; 3dgut keeps means/quats/scales fp32
-    // (they receive rasterization-backward atomicAdds) and quantizes the rest.
-    // Zeroing is skip_grad_zero-gated (first sub-batch only); the projection-bwd
-    // kernel then decode-accumulates each sub-batch. Zero bounds -> decode 0.
+    // Non-FPBO quantized accumulators, one float2 bound per 256 splats; 3dgut and
+    // fp32_geometry keep means/quats/scales fp32. Only the first sub-batch zeroes
+    // (skip_grad_zero); the projection backward decode-accumulates the rest.
     if (engine().grad.quantize_grad) {
-        const bool is_gut = (engine().primitive == "3dgut");
+        const bool fp32_geometry = engine().grad.fp32_geometry || engine().primitive == "3dgut";
         const int64_t n_bounds = (N + 255) / 256;
         const bool skip_zero = engine().optim.skip_grad_zero;
 
-        if (is_gut) {
+        if (fp32_geometry) {
             engine().grad.means.resize(PoolSlot::EngVMeans, N);
             engine().grad.quats.resize(PoolSlot::EngVQuats, N);
             engine().grad.scales.resize(PoolSlot::EngVScales, N);
@@ -144,12 +141,15 @@ static void _engine_raster_proj_backward(
     const DeviceTensor3D<float>& v_median = DeviceTensor3D<float>(),
     TorchTensorView v_rgb_dist = _tv_null(),
     TorchTensorView v_depth_dist = _tv_null(),
-    TorchTensorView v_normal_dist = _tv_null()
+    TorchTensorView v_normal_dist = _tv_null(),
+    float v_dist_rgb_per_depth = 0.0f
 ) {
     SplatStageTimer stage_timer;
+    StepTimingScope timing(StepPart::Backward, StepScale::SplatsPixels);
     RenderOutput::TensorTuple v_render_outputs = std::make_tuple(
         DeviceTensor3D<float3>(v_render_rgb),
-        DeviceTensor3D<float>(v_render_depth),
+        _tv_valid(v_render_depth) ? DeviceTensor3D<float>(v_render_depth)
+                                  : DeviceTensor3D<float>(),
         DeviceTensor3D<float3>()  // no normal gradient yet
     );
     DeviceTensor3D<float> v_render_Ts(v_render_Ts_tv);
@@ -168,23 +168,16 @@ static void _engine_raster_proj_backward(
         // those to DeviceTensor3D throws ("Expected 4D tensor view"), so leave
         // them default-constructed (null) — e.g. dist_type=D has no rgb/normal.
         v_distortion_opt = std::make_tuple(
-            dist_has_rgb(dist_type)    ? DeviceTensor3D<float3>(v_rgb_dist)    : DeviceTensor3D<float3>(),
+            dist_has_rgb(dist_type) && _tv_valid(v_rgb_dist)
+                ? DeviceTensor3D<float3>(v_rgb_dist) : DeviceTensor3D<float3>(),
             dist_has_depth(dist_type)  ? DeviceTensor3D<float>(v_depth_dist)   : DeviceTensor3D<float>(),
             dist_has_normal(dist_type) ? DeviceTensor3D<float3>(v_normal_dist) : DeviceTensor3D<float3>()
         );
     }
 
-    // Build the world-grad vector handed to rasterize_*_bwd. Three cases:
-    //   - non-fused: all six slots are real per-channel grad buffers.
-    //   - fused + 3dgs / mip: empty vector; raster_*_bwd writes nothing into
-    //     the world buffer (its atomicStore is screen-only for those prims).
-    //   - fused + 3dgut: mean/quat/scale slots are real (raster_*_bwd atomic-
-    //     adds them); opacity/dc/sh slots are null (those flow via screen or
-    //     are accumulated inside the FPBO kernel).
-    //   - grad-quant (non-fused, quantized grad): same raster handoff as fused
-    //     -- 3dgs/mip empty (screen-only), 3dgut mean/quat/scale into the fp32
-    //     world buffer; the projection contribution is folded in by the
-    //     requantize-accumulate projection-bwd kernel below.
+    // World-grad slots for rasterize_*_bwd: all six when non-fused and fp32; when
+    // fused or quantized, empty for 3dgs/mip (screen-only raster) and mean/quat/
+    // scale alone for 3dgut or quantized fp32_geometry.
     const bool grad_q = engine().grad.quantize_grad;
     std::vector<DeviceTensorFloatND> v_splats_w;
     if (!engine().optim.use_fused_proj_bwd_optim && !grad_q) {
@@ -202,7 +195,7 @@ static void _engine_raster_proj_backward(
             DeviceTensorFloatND(engine().grad.features_dc),   // [N, 3]
             DeviceTensorFloatND(engine().grad.features_sh),   // [N, K, 3]
         };
-    } else if (engine().primitive == "3dgut") {
+    } else if (engine().primitive == "3dgut" || (grad_q && engine().grad.fp32_geometry)) {
         v_splats_w = {
             DeviceTensorFloatND(engine().grad.means),         // [N, 3]
             DeviceTensorFloatND(engine().grad.quats),         // [N, 4]
@@ -212,6 +205,12 @@ static void _engine_raster_proj_backward(
             DeviceTensorFloatND(),                            // features_sh -- null
         };
     }
+
+    // The distortion terms rebuild their second moment from the rasterizer's
+    // own colour, not from what the appearance stages made of it.
+    RenderOutput::TensorTuple raster_out = engine().fwd.renders;
+    if (engine().fwd.raw_rgb.data_ptr() != nullptr)
+        std::get<0>(raster_out) = engine().fwd.raw_rgb;
 
     std::vector<DeviceTensorFloatND> v_splats_w_out, v_splats_s_out;
 
@@ -228,15 +227,19 @@ static void _engine_raster_proj_backward(
             engine().fwd.macro_log2,
             engine().fwd.render_Ts,
             engine().fwd.last_ids,
-            engine().fwd.renders,
+            raster_out,
             distortion_fwd_opt,  // forward distortion D (for S reconstruction)
             dist_type,
             accum_weight_map,
             accum_mode,
+            engine().max_weight.value,
+            engine().max_weight.step_scale,
+            engine().fwd.kernel_cut,
             v_render_outputs,
             v_render_Ts,
             v_median,
             v_distortion_opt,  // gradient w.r.t. distortion image
+            v_dist_rgb_per_depth,
             std::make_optional(v_splats_w),
             std::nullopt
         );
@@ -245,6 +248,9 @@ static void _engine_raster_proj_backward(
         if (accum_weight.data_ptr()) {
             engine().fwd.accum_weight = accum_weight;
             engine().fwd.accum_mode = accum_mode;
+        } else {
+            engine().fwd.accum_weight = DeviceVector<float>();
+            engine().fwd.accum_mode = DensifyAccumMode::None;
         }
     } else if (engine().primitive == "3dgut") {
         auto [vw, vs, vviewmats, accum_weight] = rasterize_to_pixels_3dgut_bwd(
@@ -265,16 +271,19 @@ static void _engine_raster_proj_backward(
             engine().fwd.macro_log2,
             engine().fwd.render_Ts,
             engine().fwd.last_ids,
-            engine().fwd.renders,
+            raster_out,
             distortion_fwd_opt,  // forward distortion D (for S reconstruction)
             dist_type,
             DeviceTensor3D<float>(),  // loss_map
             accum_weight_map,
             accum_mode,
+            engine().max_weight.value,
+            engine().max_weight.step_scale,
             v_render_outputs,
             v_render_Ts,
             v_median,
             v_distortion_opt,  // gradient w.r.t. distortion image
+            v_dist_rgb_per_depth,
             std::make_optional(v_splats_w),
             std::nullopt,
             false
@@ -284,6 +293,9 @@ static void _engine_raster_proj_backward(
         if (accum_weight.data_ptr()) {
             engine().fwd.accum_weight = accum_weight;
             engine().fwd.accum_mode = accum_mode;
+        } else {
+            engine().fwd.accum_weight = DeviceVector<float>();
+            engine().fwd.accum_mode = DensifyAccumMode::None;
         }
     } else {
         throw std::runtime_error("engine raster/proj backward: unknown primitive: " + engine().primitive);
@@ -293,6 +305,8 @@ static void _engine_raster_proj_backward(
     // In fused-proj-bwd-optim mode the projection backward is folded into the
     // optimizer step; we just stash the screen-space gradients for that call.
     engine().fwd.v_splats_s = v_splats_s_out;
+    engine_observe_projective_depth();
+    StepTimingScope proj_timing(StepPart::Backward, StepScale::Splats);
     if (!engine().optim.use_fused_proj_bwd_optim) {
         // SH VALUE-quant: when active in non-FPBO mode, project_vjp reads
         // the source SH via the codec instead of fp32 features_sh (which is
@@ -331,10 +345,9 @@ static void _engine_raster_proj_backward(
                 sh_bounds_stride = 256;
             }
         }
-        // Grad-quant path: non-atomic, block-wise quantized requantize-accumulate
-        // projection backward. Reads/writes engine().grad.*_q (per-splat-block);
-        // for 3dgut, means/quats/scales are the fp32 v_splats_w_out (raster's
-        // world contribution) that the kernel adds the projection grad onto.
+        // Grad-quant path: block-wise requantize-accumulate projection backward
+        // into engine().grad.*_q; with 3dgut or fp32_geometry, means/quats/scales
+        // add onto the fp32 v_splats_w_out instead.
         if (grad_q) {
             GradQuantBuffers gq;
             auto& g = engine().grad;
@@ -345,7 +358,7 @@ static void _engine_raster_proj_backward(
             if (g.features_dc_q.initialized()) { gq.dc_packed     = g.features_dc_q.packed_ptr(); gq.dc_bounds     = g.features_dc_q.bounds_ptr(); }
             if (g.features_sh_q.initialized()) { gq.sh_packed     = g.features_sh_q.packed_ptr(); gq.sh_bounds     = g.features_sh_q.bounds_ptr(); }
             auto call_qg = [&](auto fn) {
-                fn(engine().cur_num_splats, engine().sh_degree, engine().fwd.splats_w,
+                fn(engine().cur_num_splats, engine_color(), engine().fwd.splats_w,
                    _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                    (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                    engine().camera.model_str,
@@ -360,7 +373,7 @@ static void _engine_raster_proj_backward(
             else throw std::runtime_error("grad-quant projection backward: unknown primitive: " + engine().primitive);
         } else if (engine().primitive == "3dgs") {
             projection_3dgs_backward(
-                engine().cur_num_splats, engine().sh_degree, engine().fwd.splats_w,
+                engine().cur_num_splats, engine_color(), engine().fwd.splats_w,
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
@@ -370,7 +383,7 @@ static void _engine_raster_proj_backward(
                 vp_opt, vb_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
         } else if (engine().primitive == "mip") {
             projection_mip_backward(
-                engine().cur_num_splats, engine().sh_degree, engine().fwd.splats_w,
+                engine().cur_num_splats, engine_color(), engine().fwd.splats_w,
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
@@ -380,7 +393,7 @@ static void _engine_raster_proj_backward(
                 vp_opt, vb_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
         } else if (engine().primitive == "3dgut") {
             projection_3dgut_backward(
-                engine().cur_num_splats, engine().sh_degree, engine().fwd.splats_w,
+                engine().cur_num_splats, engine_color(), engine().fwd.splats_w,
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
@@ -459,6 +472,7 @@ int engine_resolve_num_loss_scales(int num_loss_scales,
 static std::map<std::string, float> _engine_loss(
     std::array<float, (int)LossWeightIndex::length> loss_weights,
     float w_ssim,
+    int perceptual_loss,
     int num_loss_scales,
     int loss_scale_min_pixels,
     bool compute_loss_map,
@@ -509,10 +523,13 @@ static std::map<std::string, float> _engine_loss(
     }
 
     // Render outputs from forward pass (pool-backed, already populated)
-    TorchTensorView render_rgb = TorchTensorView(
-        (uint64_t)std::get<0>(engine().fwd.renders).data_ptr(), 4, {C, H, W, 3});
-    TorchTensorView render_depth = TorchTensorView(
-        (uint64_t)std::get<1>(engine().fwd.renders).data_ptr(), 4, {C, H, W, 1});
+    TorchTensorView render_rgb = _engine_image_view(
+        std::get<0>(engine().fwd.renders), engine().fwd.rgb_fmt);
+    // Absent when the forward was told nothing reads it.
+    TorchTensorView render_depth =
+        std::get<1>(engine().fwd.renders).data_ptr() == nullptr ? _tv_null()
+        : TorchTensorView((uint64_t)std::get<1>(engine().fwd.renders).data_ptr(),
+                          4, {C, H, W, 1});
     TorchTensorView render_Ts = TorchTensorView(
         (uint64_t)engine().fwd.render_Ts.data_ptr(), 4, {C, H, W, 1});
 
@@ -594,6 +611,14 @@ static std::map<std::string, float> _engine_loss(
         }
     }
 
+    // The RGB distortion gradient is the depth one times w_rgb / (3 w_depth):
+    // one mask, one normalizer. The raster backward derives it instead.
+    const float w_rgb_dist = loss_weights[(int)LossWeightIndex::RgbDistReg];
+    const float w_depth_dist = loss_weights[(int)LossWeightIndex::DepthDistReg];
+    const bool derive_rgb_dist = has_rgb_dist && has_depth_dist && w_depth_dist != 0.0f;
+    const float v_dist_rgb_per_depth =
+        derive_rgb_dist ? w_rgb_dist / (3.0f * w_depth_dist) : 0.0f;
+
     std::vector<bool> needs_input_grad = {
         true,                                  // pred_rgb
         false,                                 // gt_rgb
@@ -603,16 +628,26 @@ static std::map<std::string, float> _engine_loss(
         true,                                  // pred_depth_normal
         engine().bilagrid_normal.enabled,      // gt_normal (true when bilagrid normal)
         true,                                  // pred_transmittance
-        has_rgb_dist, has_depth_dist, has_normal_dist, // distortion (rgb, depth, normal)
+        has_rgb_dist && !derive_rgb_dist, has_depth_dist, has_normal_dist, // distortion
         has_median,                            // pred_median_depth
         has_median && median_normal_active,    // pred_median_normal
     };
 
     PerPixelGrads pixel_grads = {};
 
-    // Allocate per-pixel gradient outputs
-    pixel_grads.v_render_rgb  = _pool_tv(PoolSlot::EngVRgb,   C, H, W, 3);
-    pixel_grads.v_render_depth = _pool_tv(PoolSlot::EngVDepth, C, H, W, 1);
+    // Allocate per-pixel gradient outputs. Once the appearance chain has its
+    // float16 copy, only a distortion term reads the rasterizer's own colour
+    // again, so without one v_rgb takes its buffer.
+    if (engine().fwd.dist_type == DistortionType::None &&
+        engine().fwd.raw_rgb16.data_ptr() != nullptr) {
+        pixel_grads.v_render_rgb =
+            _engine_image_view(engine().fwd.raw_rgb, PixelFormat::F32);
+        engine().fwd.raw_rgb = DeviceTensor3D<float3>();
+    } else {
+        pixel_grads.v_render_rgb = _pool_tv(PoolSlot::EngVRgb, C, H, W, 3);
+    }
+    if (_tv_valid(render_depth))
+        pixel_grads.v_render_depth = _pool_tv(PoolSlot::EngVDepth, C, H, W, 1);
     pixel_grads.v_render_Ts   = _pool_tv(PoolSlot::EngVTs,    C, H, W, 1);
     if (compute_depth_normal) {
         pixel_grads.v_depth_normal = _pool_tv(PoolSlot::EngVDepthNormal, C, H, W, 3);
@@ -639,7 +674,7 @@ static std::map<std::string, float> _engine_loss(
     }
     // Distortion gradient buffers (d loss / d D), consumed by the raster bwd.
     // RGB_D primitives: rgb + depth only; normal distortion grad stays null.
-    if (has_rgb_dist)
+    if (has_rgb_dist && !derive_rgb_dist)
         pixel_grads.v_rgb_dist    = _pool_tv(PoolSlot::EngVRgbDist,    C, H, W, 3);
     if (has_depth_dist)
         pixel_grads.v_depth_dist  = _pool_tv(PoolSlot::EngVDepthDist,  C, H, W, 1);
@@ -650,7 +685,7 @@ static std::map<std::string, float> _engine_loss(
     LossValues lv = compute_multi_scale_per_pixel_losses(
         num_loss_scales,
         render_rgb,
-        _dt3d_tv(engine().gt.rgb),
+        engine().gt.rgb,
         render_depth,
         _dt3d_tv(engine().gt.depth),
         render_normal,
@@ -666,6 +701,7 @@ static std::map<std::string, float> _engine_loss(
         engine().gt.has_mask,
         loss_weights,
         w_ssim,
+        perceptual_loss,
         saturation_threshold,
         v_losses_buf,
         needs_input_grad,
@@ -679,11 +715,19 @@ static std::map<std::string, float> _engine_loss(
     );
 
     // The one place the error map is conditioned, so the preview copy below
-    // and the raster backward aggregation read the same picture.
+    // and the raster backward read the same picture; a learned-score step
+    // divides it, unpowered, by the rendered score map for the bwd to average.
+    TorchTensorView score_fit = _tv_null();
+    if (!map_only && engine().fwd.render_score.data_ptr() != nullptr)
+        score_fit = TorchTensorView((uint64_t)engine().fwd.render_score.data_ptr(),
+                                    4, {C, H, W, 1});
     if (compute_loss_map && _tv_valid(loss_map_buf))
         normalize_clip_map_inplace_tensor(loss_map_buf, loss_map_normalize,
                                           loss_map_clip_quantile,
-                                          loss_map_power);
+                                          loss_map_power, score_fit);
+    if (!map_only)
+        engine().learned_score.ratio_map =
+            compute_loss_map && _tv_valid(loss_map_buf) && _tv_valid(score_fit);
 
     if (map_only) {
         backend::memcpy_sync((void*)std::get<0>(map_out),
@@ -692,6 +736,8 @@ static std::map<std::string, float> _engine_loss(
                              backend::MemcpyKind::DeviceToHost);
         return {};
     }
+
+    _engine_calib_warp_after_loss(pixel_grads.v_render_rgb);
 
     // --- Color-shift regularizer (combined bilagrid + PPISP) ---
     // Inject the design-(1) gradient on v_render_rgb BEFORE either bilagrid /
@@ -777,7 +823,17 @@ static std::map<std::string, float> _engine_loss(
         if (engine().color_space.splat_enabled)
             _engine_color_space_backward_hook(pixel_grads.v_render_rgb);
     };
-    if (engine().ppisp.cur_run_before_color_space) {
+    const bool fused = engine().appearance.fused;
+    if (fused) {
+        // The fused chain ends where the bilateral grid starts, so only a
+        // PPISP after the grid is left outside it.
+        if (engine().appearance.params.ppisp == AppearancePpisp::Off)
+            _ppisp_bwd();
+        _bilagrid_bwd();
+        _engine_appearance_backward(pixel_grads.v_render_rgb,
+                                    pixel_grads.v_render_Ts,
+                                    overexposure_reg_weight);
+    } else if (engine().ppisp.cur_run_before_color_space) {
         _bilagrid_bwd();
         _color_space_bwd();
         _ppisp_bwd();
@@ -794,16 +850,16 @@ static std::map<std::string, float> _engine_loss(
     // --- Image-space overexposure regularization ---
     // Skipped under a blend: the blend backward applies it instead, on the
     // composite rather than on this pre-blend buffer.
-    if (overexposure_reg_weight != 0.0f && !engine().background.enabled) {
+    if (!fused && overexposure_reg_weight != 0.0f && !engine().background.enabled) {
         // Both buffers are in the splat working color space here. Whose
         // values v_render_rgb is the gradient OF is what picks between them:
         // the color-space bwd hook does not re-point fwd.renders.rgb.
-        DeviceTensor3D<float3> rgb_t =
+        TorchTensorView rgb_t =
             engine().ppisp.cur_run_before_color_space
-                ? engine().ppisp.fwd_pre
+                ? _engine_image_view(engine().ppisp.fwd_pre, PixelFormat::F32)
             : engine().color_space.splat_enabled
-                ? engine().color_space.fwd_pre
-                : DeviceTensor3D<float3>(render_rgb);
+                ? _engine_image_view(engine().color_space.fwd_pre, PixelFormat::F32)
+                : render_rgb;
         DeviceTensor3D<float3> v_rgb_t(pixel_grads.v_render_rgb);
         overexposure_grad_add(rgb_t, overexposure_reg_weight, v_rgb_t);
     }
@@ -811,7 +867,7 @@ static std::map<std::string, float> _engine_loss(
     // --- Background blend backward hook ---
     // After the color-space hook, per the forward order above. It ADDS the
     // blend's transmittance gradient into v_render_Ts, not overwrite.
-    if (engine().background.enabled) {
+    if (!fused && engine().background.enabled) {
         _engine_background_backward_hook(
             pixel_grads.v_render_rgb,
             pixel_grads.v_render_Ts,
@@ -863,15 +919,24 @@ static std::map<std::string, float> _engine_loss(
                    : DeviceTensor3D<float>(),
         pixel_grads.v_rgb_dist,
         pixel_grads.v_depth_dist,
-        pixel_grads.v_normal_dist);
+        pixel_grads.v_normal_dist,
+        v_dist_rgb_per_depth);
 
     // --- Build loss dict for display ---
     auto sdiv = [](float x, float y) -> float { return y != 0.0f ? x / y : 0.0f; };
 
     std::map<std::string, float> loss_dict;
-    loss_dict["rgb_loss"] = lv.rgb_loss + w_ssim * (1.0f - lv.ssim);
     loss_dict["psnr"] = lv.rgb_psnr;
-    loss_dict["ssim"] = lv.ssim;
+    if (perceptual_loss == (int)PerceptualLoss::SCielab) {
+        loss_dict["rgb_loss"] = lv.rgb_loss + w_ssim * kScielabLossPerDeltaE * lv.delta_e;
+        loss_dict["delta_e"] = lv.delta_e;
+    } else if (perceptual_loss == (int)PerceptualLoss::Flip) {
+        loss_dict["rgb_loss"] = lv.rgb_loss + w_ssim * lv.flip;
+        loss_dict["flip"] = lv.flip;
+    } else {
+        loss_dict["rgb_loss"] = lv.rgb_loss + w_ssim * (1.0f - lv.ssim);
+        loss_dict["ssim"] = lv.ssim;
+    }
     loss_dict["depth_loss"] = sdiv(lv.depth_sup,
         loss_weights[(int)LossWeightIndex::DepthSup]);
     loss_dict["normal_loss"] = sdiv(lv.normal_sup,
@@ -905,6 +970,7 @@ std::map<std::string, float> engine_compute_loss_backward(
     int step,
     std::array<float, (int)LossWeightIndex::length> loss_weights,
     float w_ssim,
+    int perceptual_loss,
     int num_loss_scales,
     int loss_scale_min_pixels,
     bool compute_loss_map,
@@ -920,7 +986,8 @@ std::map<std::string, float> engine_compute_loss_backward(
     float color_shift_reg_weight,
     float color_shift_reg_beta
 ) {
-    return _engine_loss(loss_weights, w_ssim, num_loss_scales,
+    StepTimingScope timing(StepPart::Loss, StepScale::Pixels);
+    return _engine_loss(loss_weights, w_ssim, perceptual_loss, num_loss_scales,
                         loss_scale_min_pixels, compute_loss_map, loss_map_mode,
                         robust_edge_aware_quantile, nms_falloff,
                         loss_map_normalize,
@@ -939,7 +1006,7 @@ bool engine_preview_loss_map(const LossConfig& loss, TorchTensorView out) {
         throw std::runtime_error("engine_preview_loss_map: null destination");
     // The regularizer weights are dropped: each of them only ever adds to a
     // gradient this call does not compute.
-    _engine_loss(loss.weights, loss.w_ssim, loss.num_loss_scales,
+    _engine_loss(loss.weights, loss.w_ssim, loss.perceptual_loss, loss.num_loss_scales,
                  loss.loss_scale_min_pixels, true, loss.loss_map_mode,
                  loss.robust_edge_aware_quantile, loss.nms_falloff,
                  loss.loss_map_normalize,

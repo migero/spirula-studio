@@ -41,6 +41,53 @@ struct PriorCentre {
     Mat3 A[3] = {mat3Identity(), mat3Identity(), mat3Identity()};
     Vec3 b;
     Vec3 sigma{1, 1, 1};
+    double cauchy = 0;  // > 0: Ceres' CauchyLoss(a), a in sigmas, not the Huber knee
+    bool absolute() const { return n == 1; }
+};
+
+// Where a GPS fit's up came from: its own 3D rotation, an IMU, the images' declared
+// level, or the cameras' mean up -- the one that measures nothing.
+enum class GpsUp { Fitted, Imu, Declared, Cameras };
+
+// The metric frame a source's absolute centre factors were stated in, for checking a
+// pose between solves and the gauge of a finished model: a camera centre c is A c + t - p
+// metres off its position p, level components only when flat. The solver never reads it.
+struct GpsFrame {
+    bool ok = false;
+    bool flat = false;
+    GpsUp up = GpsUp::Fitted;
+    Mat3 A = mat3Identity();  // model -> metres: scale, rotation, up alignment
+    Vec3 t{0, 0, 0};
+    double sigma_h = 0;       // metres, the factors' level sigma
+    double gate = 0;          // metres, the fit's inlier radius
+    Vec3 centroid{0, 0, 0};   // metres, the fitted positions' mean
+    double spread = 0;        // metres, their RMS radius; 0 leaves `gate` flat
+    std::vector<int> track_ids;
+    std::vector<double> track_vertical_offsets;
+
+    double trackVerticalOffset(int track) const {
+        for (size_t i = 0; i < track_ids.size() && i < track_vertical_offsets.size(); i++)
+            if (track_ids[i] == track) return track_vertical_offsets[i];
+        return 0.0;
+    }
+
+    // The radius at metric position p. Error correlated across a fit leaves its frame
+    // off by up to its noise at the spread; past it, by that much more per spread out.
+    double gateAt(const Vec3& p) const {
+        if (!(spread > 0)) return gate;
+        Vec3 d = p - centroid;
+        if (flat) d.z = 0;
+        const double r = d.norm() / spread;
+        return gate * std::sqrt(1.0 + r * r);
+    }
+};
+
+// The world up the images that declare their own (PriorSource::declaredUp)
+// were found to agree on, for checking a pose between solves.
+struct LevelFrame {
+    bool ok = false;
+    Vec3 up_w{0, 0, 1};
+    double tol_deg = 0;   // tilt past which a registration is refused
 };
 
 // Image indices are whatever the holder says: the mapper fills them with
@@ -48,10 +95,22 @@ struct PriorCentre {
 struct PosePriors {
     Vec3 up_w{0, 0, 1};    // the world up every PriorUp is measured against
     double huber = 1.345;  // in sigmas, per factor
+    GpsFrame gps;          // where the single-image centres are stated
+    LevelFrame level;
     std::vector<PriorRotation> rotations;
     std::vector<PriorUp> ups;
     std::vector<PriorCentre> centres;
     bool empty() const { return rotations.empty() && ups.empty() && centres.empty(); }
+    bool hasAbsoluteCentres() const {
+        return std::any_of(centres.begin(), centres.end(),
+                           [](const PriorCentre& c) { return c.absolute(); });
+    }
+    void dropAbsoluteCentres() {
+        centres.erase(std::remove_if(centres.begin(), centres.end(),
+                                     [](const PriorCentre& c) { return c.absolute(); }),
+                      centres.end());
+        gps = GpsFrame{};
+    }
     size_t size() const { return rotations.size() + ups.size() + centres.size(); }
 };
 
@@ -63,6 +122,7 @@ public:
     void init(const BAProblem& P) {
         const PosePriors* pr = P.priors;
         nfact_ = 0;
+        abs_ = false;
         fact_.clear();
         rows_.clear();
         cols_.clear();
@@ -107,6 +167,7 @@ public:
             for (int k = 0; k < c.n; k++) f.addFrame(frameOf(c.img[k]));
             note(f);
             fact_.push_back(f);
+            abs_ = abs_ || c.absolute();
         }
         nfact_ = fact_.size();
         // CSR in (row, col) order: std::map iterates that way.
@@ -128,6 +189,8 @@ public:
     }
 
     bool empty() const { return nfact_ == 0; }
+    // Some factor states an image's centre on its own (GPS), not relative to others.
+    bool hasAbsoluteCentres() const { return abs_; }
     uint32_t numEntries() const { return (uint32_t)cols_.size(); }
     const std::vector<uint32_t>& rows() const { return rows_; }
     const std::vector<uint32_t>& cols() const { return cols_; }
@@ -142,23 +205,28 @@ public:
         Eval ev;
         for (const Fact& f : fact_) {
             evaluate(P, poses, exts, f, ev);
-            c += 0.5 * robustCost(ev.r);
+            c += 0.5 * robustCost(ev.r, ev.cauchy);
         }
         return c;
     }
 
     // Blocks and gradient at the given parameters, the diagonal blocks damped
     // by (1 + damping) as the observation kernels damp theirs. Returns the cost.
-    double assemble(const BAProblem& P, const double* poses, const double* exts, double damping) {
+    double assemble(const BAProblem& P, const double* poses, const double* exts, double damping,
+                    bool fix_rotations = false) {
         std::fill(blk_.begin(), blk_.end(), 0.0);
         std::fill(g_.begin(), g_.end(), 0.0);
         double c = 0;
         Eval ev;
         for (const Fact& f : fact_) {
             evaluate(P, poses, exts, f, ev);
+            if (fix_rotations)
+                for (int a = 0; a < f.nf; a++)
+                    for (int m = 0; m < 3; m++)
+                        for (int p = 0; p < 3; p++) ev.J[a][m][p] = 0;
             const double s = ev.r[0] * ev.r[0] + ev.r[1] * ev.r[1] + ev.r[2] * ev.r[2];
-            c += 0.5 * robustCost(ev.r);
-            const double w = robustWeight(s);
+            c += 0.5 * robustCost(ev.r, ev.cauchy);
+            const double w = robustWeight(s, ev.cauchy);
             for (int a = 0; a < f.nf; a++) {
                 double* ga = &g_[6 * (size_t)f.frame[a]];
                 for (int p = 0; p < 6; p++) {
@@ -220,6 +288,7 @@ private:
     struct Eval {
         double r[3];
         double J[3][3][6];   // per frame slot, 3 x [angle-axis 3 | t 3]
+        double cauchy = 0;   // the factor's PriorCentre::cauchy
     };
 
     // One image's chain: its frame block and the member on top of it.
@@ -260,12 +329,15 @@ private:
             for (int p = 0; p < 3; p++) J[m][p] += scale * M[3 * m + p];
     }
 
-    double robustCost(const double r[3]) const {
+    // rho(s) = a^2 log(1 + s/a^2) for Cauchy, as ceres::CauchyLoss(a).
+    double robustCost(const double r[3], double cauchy) const {
         const double s = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        if (cauchy > 0) return cauchy * cauchy * std::log1p(s / (cauchy * cauchy));
         const double k2 = huber_ * huber_;
         return s <= k2 ? s : 2.0 * huber_ * std::sqrt(s) - k2;
     }
-    double robustWeight(double s) const {
+    double robustWeight(double s, double cauchy) const {
+        if (cauchy > 0) return 1.0 / (1.0 + s / (cauchy * cauchy));
         const double k2 = huber_ * huber_;
         return s <= k2 ? 1.0 : huber_ / std::sqrt(s);
     }
@@ -274,6 +346,7 @@ private:
                   Eval& ev) const {
         const PosePriors& pr = *P.priors;
         huber_ = pr.huber;
+        ev.cauchy = 0;
         for (int a = 0; a < 3; a++)
             for (int m = 0; m < 3; m++)
                 for (int p = 0; p < 6; p++) ev.J[a][m][p] = 0;
@@ -304,6 +377,7 @@ private:
             return;
         }
         const PriorCentre& q = pr.centres[f.index];
+        ev.cauchy = q.cauchy;
         Vec3 sum{0, 0, 0};
         for (int k = 0; k < q.n; k++) {
             const Cam c = camOf(P, poses, exts, q.img[k]);
@@ -332,6 +406,7 @@ private:
 
     std::vector<Fact> fact_;
     size_t nfact_ = 0;
+    bool abs_ = false;
     uint32_t nframes_ = 0;
     mutable double huber_ = 1.345;
     std::vector<uint32_t> rows_, cols_, erow_;

@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <numeric>
@@ -37,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include "sfm/core/Events.h"
 #include "sfm/core/Model.h"
 #include "sfm/map/Mapper.h"
 #include "sfm/map/Merge.h"
@@ -133,8 +135,11 @@ struct AssembleStats {
     // wildly different amounts, and a single total hides which one is worth its
     // price on a given capture.
     double t_audit = 0, t_split = 0, t_grow_tail = 0, t_reseed = 0, t_final_merge = 0, t_fold = 0;
+    double t_weld = 0;
+    // SS_SFM_MAP_PROF only, and only when a seam was welded: every model as it was before.
+    std::vector<Reconstruction> pre_weld;
     double finishSecs() const {
-        return t_audit + t_split + t_grow_tail + t_reseed + t_final_merge + t_fold;
+        return t_audit + t_split + t_grow_tail + t_reseed + t_final_merge + t_fold + t_weld;
     }
 };
 
@@ -359,7 +364,12 @@ inline void mergeUpwards(Mapper& mapper, std::vector<Reconstruction>& models,
     int grow_passes = 0;
     bool solve_pending = false;  // a level merged and its joint solve was deferred
     if (!mopt.do_merge && !mopt.do_grow) return;
+    // The bar's count: a level halves the models, and the two on top are for
+    // the extra levels a refused pair earns -- over rather than under.
+    const int64_t levels =
+        (int64_t)std::ceil(std::log2((double)std::max<size_t>(2, models.size()))) + 2;
     for (int round = 0; round < std::max(1, opt.max_rounds) && models.size() > 1; round++) {
+        events::progress(Stage::Merge, std::min<int64_t>(round, levels - 1), levels);
         st.rounds = (size_t)round + 1;
         size_t refused = 0;
         std::map<std::string, size_t> why;
@@ -490,6 +500,7 @@ inline void mergeUpwards(Mapper& mapper, std::vector<Reconstruction>& models,
         st.joint_ba++;
         st.t_ba += secs(t0, clk());
     }
+    events::progress(Stage::Merge, levels, levels);
 
     if (opt.verbose) {
         const ManagerStats& f = st.finish;
@@ -682,11 +693,28 @@ inline std::vector<Reconstruction> finishModels(Mapper& mapper,
         t0 = clk();
         const size_t before = models.size();
         models = splitFoldedModels(mapper, std::move(models), fopt, memo, st.finish);
-        if (models.size() != before)
-            for (Reconstruction& m : models)
-                if (m.numRegistered() >= 2 && memo.audited.insert(ModelMemo::of(m)).second)
-                    m = mapper.refine(m);
+        if (models.size() != before) {
+            models = refineAfterFoldSplit(std::move(models), memo, mopt, st.finish,
+                                          [&](const Reconstruction& m) { return mapper.refine(m); });
+        }
         st.t_fold = secs(t0, clk());
+    }
+
+    // Last, on the models as written: the weld moves poses, and a pass after it that
+    // re-solved without the fused points could reopen what it closed.
+    t0 = clk();
+    std::vector<Reconstruction> pre;
+    for (Reconstruction& m : models) {
+        if (MapProf::enabled()) pre.push_back(m);
+        if (m.numRegistered() < 2) continue;
+        Mapper::SeamStats ss;
+        m = mapper.weldSeams(m, &ss);
+        if (!ss.undone) st.finish.seams_welded += ss.open.size();
+    }
+    st.t_weld = secs(t0, clk());
+    if (st.finish.seams_welded) {
+        sortModels(pre);
+        st.pre_weld = std::move(pre);
     }
 
     sortModels(models);
@@ -700,7 +728,7 @@ inline std::vector<Reconstruction> finishModels(Mapper& mapper,
                   (long long)st.finish.reseeded_models,
                   (long long)st.finish.dropped_redundant,
                   (long long)st.finish.audited_repaired,
-                  (long long)st.finish.audited_out});
+                  (long long)st.finish.audited_out, (long long)st.finish.seams_welded});
     mapper.claimAll(models);
     return models;
 }

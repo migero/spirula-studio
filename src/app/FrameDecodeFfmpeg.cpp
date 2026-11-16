@@ -2,6 +2,7 @@
 // track, each writing pictures to a pipe, read in lockstep.
 
 #include "app/FrameDecode.h"
+#include "app/CubeLut.h"
 
 #include "app/FrameSharpness.h"
 #include "app/gui/Subprocess.h"
@@ -33,18 +34,26 @@ bool has_fps_mode(const std::string& exe) {
     return major < 0 || major > 5 || (major == 5 && minor >= 1);
 }
 
+double span_fps(const VideoFacts& f) { return f.fps > 1.0 ? f.fps : 30.0; }
+
 // Everything before the output. Every decoded frame comes out exactly once, in
-// presentation order: a frame's place in this stream is the index it is named
-// by, as it is for the built-in decoder.
+// presentation order: a frame's place in this stream, plus the clip's first
+// frame, is the index it is named by, as it is for the built-in decoder.
 std::vector<std::string> decode_args(const FrameExtractJob& o, const VideoFacts& f,
-                                     int track, bool auto_rotate, bool hwaccel,
-                                     const std::string& filters) {
+                                     int track, bool auto_rotate,
+                                     const std::string& filters, const FrameSpan& span) {
     static const bool fps_mode = has_fps_mode(o.ffmpeg_exe);
     const int stream = track < (int)f.streams.size() ? f.streams[track] : -1;
     std::vector<std::string> a{o.ffmpeg_exe, "-nostdin", "-hide_banner",
-                               "-loglevel", "error"};
-    if (hwaccel) a.insert(a.end(), {"-hwaccel", "auto"});
+                               "-loglevel", "error", "-hwaccel", "none"};
     if (!auto_rotate) a.push_back("-noautorotate");
+    if (span.first > 0) {
+        // Half a frame early, so rounding cannot skip the first one. Exact on
+        // a constant-rate file; a variable-rate one is off by what it varies.
+        char at[32];
+        std::snprintf(at, sizeof at, "%.6f", ((double)span.first - 0.5) / span_fps(f));
+        a.insert(a.end(), {"-ss", at});
+    }
     a.insert(a.end(), {"-i", o.input, "-map",
                        stream >= 0 ? "0:" + std::to_string(stream)
                                    : "0:v:" + std::to_string(track)});
@@ -79,9 +88,27 @@ std::string join_filters(std::initializer_list<std::string> parts) {
     return out;
 }
 
-// video.slang's luma_thumbnail on the host, summed in the same order and
-// type, so the plan is the built-in decoder's: both decode the Y plane
-// bit-exactly, and a plan moves by frames when its grey input moves by one.
+struct Rgb48Frame {
+    std::vector<uint8_t> data;
+    int width = 0, height = 0;
+};
+
+void size_rgb8(const Rgb48Frame& src, nn::Image& dst) {
+    dst.width = src.width;
+    dst.height = src.height;
+    dst.channels = 3;
+    dst.data.resize((size_t)src.width * src.height * 3);
+}
+
+void quantize_rgb48be(const Rgb48Frame& src, nn::Image& dst) {
+    size_rgb8(src, dst);
+    for (size_t i = 0; i < dst.data.size(); i++) {
+        const unsigned v = (unsigned)src.data[i * 2] * 256 + src.data[i * 2 + 1];
+        dst.data[i] = (uint8_t)((v + 128) / 257);
+    }
+}
+
+// Match the native luma thumbnail's box sampling and rounding.
 void luma_box(const uint8_t* y, int sw, int sh, int ow, int oh, uint8_t* out) {
     for (int oy = 0; oy < oh; oy++) {
         const int y0 = (int)((int64_t)oy * sh / oh);
@@ -123,21 +150,22 @@ bool measure_motion_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& si
     motion_frame_size(mo.view, w, h, mo.width, mo.height);
 
     MotionTracker tracker(mo);
-    const double fps = facts.fps > 1.0 ? facts.fps : 30.0;
+    const double fps = span_fps(facts);
     const int stride = std::max(
         1, std::min((int)std::lround(fps / 15.0), std::max(1, o.skip / 3)));
+    const FrameSpan span = clip_frames(o, fps);
+    const int64_t span_n = span.length(facts.frames);
 
-    // Every frame's Y plane comes over whole: dropping frames in ffmpeg would
-    // lose the count the plan is budgeted against. Decoded in software: NVDEC's
-    // download squeezed a full-range Y plane into studio range.
+    // Retain every source frame so motion plans keep their source indices.
     FfmpegFrames ff;
-    if (!ff.open(decode_args(o, facts, track, false, false, "extractplanes=y,format=gray"),
-                 true, error))
+    if (!ff.open(decode_args(o, facts, track, false, "extractplanes=y,format=gray",
+                             span),
+                 FfmpegFrameFormat::Gray8, error))
         return false;
 
     std::vector<uint8_t> luma, gray((size_t)mo.width * mo.height);
     int lw = 0, lh = 0;
-    int64_t index = -1;
+    int64_t index = span.first - 1;
     size_t reported = 0;
     while (ff.next(luma, lw, lh, error)) {
         if (sinks.cancel && sinks.cancel->load()) {
@@ -145,6 +173,10 @@ bool measure_motion_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& si
             return false;
         }
         ++index;
+        if (span.past(index)) {
+            ff.close();
+            break;
+        }
         if (index < o.start_frame || index % stride != 0) continue;
         luma_box(luma.data(), lw, lh, mo.width, mo.height, gray.data());
         tracker.track(gray.data(), index);
@@ -153,14 +185,16 @@ bool measure_motion_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& si
             for (; reported < tracker.costs().size(); reported++)
                 sinks.measured(tracker.ends()[reported], facts.frames,
                                tracker.costs()[reported]);
-        if (sinks.scanning) sinks.scanning(index + 1, facts.frames);
+        if (sinks.scanning) sinks.scanning(index + 1 - span.first, span_n);
     }
     if (!error.empty()) return false;
     tracker.finish();
     out.cost = tracker.costs();
     out.step = tracker.steps();
     out.ends = tracker.ends();
-    out.frames = index + 1;
+    // A clip's end stops the decode short of the whole video's count.
+    out.frames = span.end >= 0 ? std::max<int64_t>(span.end, facts.frames) : index + 1;
+    if (span.first > 0 || span.end >= 0) out.span = span.length(out.frames);
     out.skip = o.skip;
     out.window = std::max(o.keep, 1);
     out.max_frames = o.max_frames;
@@ -178,46 +212,72 @@ bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& s
                             const InstantSink& on_frame) {
     const size_t n = tracks.size();
     const int keep = o.keep;
+    std::shared_ptr<const CubeLut> lut;
+    if (!o.lut.empty()) {
+        lut = cube_lut_cached(o.lut, error);
+        if (!lut) return false;
+    }
     // A fixed rate is dropped by ffmpeg before the colour conversion, and the
     // k-th picture out is the clock's k-th candidate. A plan is thousands of
     // windows, too many for a filter expression, so every frame comes over.
     const bool filtered = plan.empty();
+    const FrameSpan span = clip_frames(o, span_fps(facts));
     std::string select;
     if (filtered) {
-        char b[112];
-        if (o.start_frame > 0 && keep == 0)
-            std::snprintf(b, sizeof b, "select='gte(n,%lld)*not(mod(n,%d))'",
-                          (long long)o.start_frame, o.skip);
-        else if (o.start_frame > 0)
-            std::snprintf(b, sizeof b,
-                          "select='gte(n,%lld)*lt(mod(n+%d,%d),%d)'",
-                          (long long)o.start_frame, keep, o.skip, keep);
-        else if (keep == 0)
-            std::snprintf(b, sizeof b, "select='not(mod(n,%d))'", o.skip);
+        // `n` restarts at the clip; the clock counts from the file's start.
+        char b[144];
+        const long long at = (long long)span.first;
+        const long long from = (long long)o.start_frame - at;   // >= 0 to skip
+        if (o.start_frame > span.first) {
+            if (keep == 0)
+                std::snprintf(b, sizeof b,
+                              "select='gte(n,%lld)*not(mod(n+%lld,%d))'", from, at,
+                              o.skip);
+            else
+                std::snprintf(b, sizeof b,
+                              "select='gte(n,%lld)*lt(mod(n+%lld,%d),%d)'", from,
+                              at + keep, o.skip, keep);
+        } else if (keep == 0)
+            std::snprintf(b, sizeof b, "select='not(mod(n+%lld,%d))'", at, o.skip);
         else
-            std::snprintf(b, sizeof b, "select='lt(mod(n+%d,%d),%d)'", keep, o.skip,
-                          keep);
+            std::snprintf(b, sizeof b, "select='lt(mod(n+%lld,%d),%d)'", at + keep,
+                          o.skip, keep);
         select = b;
     }
     const std::string filters =
-        join_filters({select, convert ? convert_filters(o) : "", "format=rgb24"});
+        join_filters({select, convert ? convert_filters(o) : "",
+                      lut ? "format=rgb48be" : "format=rgb24"});
     std::vector<std::unique_ptr<FfmpegFrames>> ff(n);
     for (size_t k = 0; k < n; k++) {
         ff[k] = std::make_unique<FfmpegFrames>();
         if (!ff[k]->open(decode_args(o, facts, tracks[k], convert && o.auto_rotate,
-                                     true, filters),
-                         false, error))
+                                     filters, span),
+                         lut ? FfmpegFrameFormat::Rgb48Be : FfmpegFrameFormat::Rgb8,
+                         error))
             return false;
     }
 
     // Only the best instant of the window is held: the window's argmax, as the
     // built-in decoder takes it, without keeping `keep` pictures a track.
-    SelectClock clock{o.keep, o.skip, plan, 0, o.start_frame};
-    std::vector<nn::Image> cur(n), best(n);
+    SelectClock clock{o.keep, o.skip, plan, 0};
+    clock.span = span;
+    clock.from = o.start_frame;
+    PickRule rule{o.blur_reject, o.blur_neighbour, o.similar_bits};
+    const bool judge = rule.on() || (bool)sinks.judged;
+    std::unique_ptr<EdgeMeter> meter;
+    if (rule.max_blur > 0.0f) meter = std::make_unique<EdgeMeter>();
+    std::vector<nn::Image> cur(lut ? 0 : n), best(n);
+    std::vector<Rgb48Frame> wide_cur(lut ? n : 0), wide_best(lut ? n : 0);
+    std::vector<std::vector<float>> score_scratch(n);
+    auto grade = [&](size_t k) {
+        size_rgb8(wide_best[k], best[k]);
+        apply_cube_lut_rgb48be(*lut, wide_best[k].data.data(), best[k].data.data(),
+                              (size_t)best[k].width * best[k].height);
+    };
     std::vector<double> score(n), score_ms(n);
     std::vector<std::string> errs(n);
     double best_score = -1.0;
-    int64_t best_index = -1, i = -1;
+    int64_t best_index = -1, i = span.first - 1;
     bool held = false;
     int written = 0;
 
@@ -228,19 +288,27 @@ bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& s
         }
         int64_t next = i + 1;
         if (filtered)
-            while (!clock.candidate(next)) ++next;
+            while (!span.past(next) && !clock.candidate(next)) ++next;
+        if (span.past(next)) break;
         const bool cand = filtered || clock.candidate(next);
         const bool measure = cand && keep != 0;
         auto read = [&](size_t k) {
-            nn::Image& im = cur[k];
-            if (!ff[k]->next(im.data, im.width, im.height, errs[k])) return false;
-            im.channels = 3;
-            if (measure) {
-                const double t0 = nn::now_ms();
-                score[k] = sharpness_score(im.data.data(), im.width, im.height);
-                score_ms[k] = nn::now_ms() - t0;
-            }
-            return true;
+            auto read_picture = [&](auto& im) {
+                if (!ff[k]->next(im.data, im.width, im.height, errs[k])) return false;
+                if (measure) {
+                    const double t0 = nn::now_ms();
+                    score[k] = ff[k]->sample_bytes() == 2
+                                   ? sharpness_score_rgb48be(im.data.data(), im.width,
+                                                            im.height, score_scratch[k])
+                                   : sharpness_score(im.data.data(), im.width, im.height,
+                                                     score_scratch[k]);
+                    score_ms[k] = nn::now_ms() - t0;
+                }
+                return true;
+            };
+            if (lut) return read_picture(wide_cur[k]);
+            cur[k].channels = 3;
+            return read_picture(cur[k]);
         };
         const double t0 = nn::now_ms();
         bool got = true;
@@ -272,12 +340,39 @@ bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& s
         double s = 0;
         for (size_t k = 0; k < n; k++) s += measure ? score[k] : 0.0;
         if (!held || s > best_score) {
-            best.swap(cur);
+            if (lut) wide_best.swap(wide_cur);
+            else best.swap(cur);
             best_score = s;
             best_index = i;
             held = true;
         }
         if (!clock.step(i)) continue;
+        held = false;
+        bool graded_first = false;
+        if (judge) {
+            FramePick p;
+            p.index = best_index;
+            const double t1 = nn::now_ms();
+            // Reuse track 0's output for ungraded judgement, then overwrite it.
+            if (lut) quantize_rgb48be(wide_best[0], best[0]);
+            measure_pick(p, best[0].data.data(), best[0].width, best[0].height, meter.get());
+            t.sharpness += nn::now_ms() - t1;
+            rule.judge(p);
+            if (sinks.judged) {
+                if (lut) {
+                    grade(0);
+                    graded_first = true;
+                }
+                sinks.judged(p, best[0]);
+            }
+            if (p.verdict != PickVerdict::Kept) {
+                ++(p.verdict == PickVerdict::Blurry ? t.blurry : t.similar);
+                continue;
+            }
+        }
+        if (lut)
+            for (size_t k = 0; k < n; k++)
+                if (k != 0 || !graded_first) grade(k);
         std::string err;
         if (!on_frame(best, best_index, err)) {
             log_line(sinks, "frame " + std::to_string(best_index) + ": " + err);

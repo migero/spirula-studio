@@ -19,14 +19,18 @@
 #include "app/gui/PreviewFrames.h"
 #include "app/gui/StencilEdit.h"
 #include "app/gui/StencilPreset.h"
+#include "app/gui/StencilSetMenu.h"
 #include "app/gui/edit/EditTool.h"
 #include "app/gui/mask/Livewire.h"
+#include "app/gui/mask/MaskWindow.h"
 #include "app/gui/mask/PathTool.h"
 #include "app/gui/mask/PenTool.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -43,9 +47,13 @@ public:
     // `src` carries the decoder and the FrameLook the run will use, so the
     // picture here is the file it writes. Video listing and probing run on the
     // panel worker; frame decoding follows there after the list is ready.
-    void open(const PreviewSource& src, const MaskModelFiles& model);
+    void open(const PreviewSource& src, const MaskModelFiles& model,
+              std::optional<PreviewFrame> initial = std::nullopt);
     bool is_open() const { return _open; }
     void close();
+    // The source preview's frame: a video's frame number, or a photo's path. A
+    // frame outside the clip lands on its nearer end.
+    void show_frame(const PreviewFrame& frame);
 
     // Draws the modal window. Call once per frame from the dataset screen,
     // inside its ImGui frame. Both arguments are edited in place.
@@ -60,7 +68,20 @@ public:
     void set_workspace(const std::string& w) { _workspace = w; }
     // Load menu's "Other file...": the caller owns the file picker.
     bool take_browse_request() { return std::exchange(_browse_requested, false); }
-    void load_file(app::FrameStencil& stencil, const std::string& path);
+    // Shown where a click or prompt finds no model: draws a picker and returns
+    // the model once the user takes one, empty until then.
+    void set_model_picker(std::function<MaskModelFiles()> pick) {
+        _pick_model = std::move(pick);
+    }
+    bool load_file(app::FrameStencil& stencil, const std::string& path);
+    // A saved set to change here, on `camera` where there are several. Call
+    // after open(); draw() loads it once the frames are listed, because where
+    // it goes depends on the cameras.
+    struct EditRequest {
+        StencilPreset set;
+        std::string camera;
+    };
+    void edit_saved(EditRequest request) { _edit_request = std::move(request); }
 
 private:
     struct Rgb;
@@ -72,14 +93,19 @@ private:
     // The key the worker's Job uses for the shown frame, so the panel can
     // tell whether the edge map it holds is this frame's.
     std::string shown_frame_key() const;
+    // Where show_frame()'s frame sits in _frames; -1 for a photo not in it.
+    int frame_position(const PreviewFrame& frame) const;
     void upload_preview();
-    void upload_stencil(const app::FrameMask& stencil);
+    // `win` is the part of the frame on screen, normalized (u0, v0, u1, v1).
+    void upload_stencil(const app::FrameMask& stencil, const float win[4], int w, int h);
     void draw_image(MaskSettings& settings, app::FrameStencil& stencil,
                     bool& edited);
     void draw_objects(MaskSettings& settings, bool& edited);
     void draw_stencil(app::FrameStencil& stencil, bool& edited);
     void draw_tools(app::FrameStencil& stencil, bool& edited);
     void draw_saved_areas(app::FrameStencil& stencil);
+    void start_editing(app::FrameStencil& stencil, const StencilPreset& set);
+    void show_camera(const std::string& camera);
     // A pen shape's anchors and handles under Points, or the pen with Ctrl:
     // hover, grab, drag, and the history step on release. True: the pointer
     // is on one of them, so the click is not the canvas's.
@@ -128,7 +154,7 @@ private:
     int  _folder_idx = 0;
     std::vector<PreviewFrame> _frames;
     // Every image of a photo input; the border fit reads the ones sharing the
-    // shown frame's camera folder. The slider offers a dozen, a fit two dozen.
+    // shown frame's camera folder. The slider offers all of them, a fit two dozen.
     std::vector<std::string> _all_files;
     bool _frames_ready = false;         // guarded by _mu
     PreviewSource _listed_src;          // guarded by _mu
@@ -136,6 +162,7 @@ private:
     std::vector<std::string> _all_files_pending;
     std::vector<std::string> _folders_pending;
     int  _frame_idx = 0;
+    std::optional<PreviewFrame> _target_frame;   // until the listing lands
     bool _frame_dirty = true;           // the chosen frame changed
     bool _needs_run = false;            // prompt edited; rerun on release
     std::atomic<bool> _listing{false};
@@ -168,6 +195,13 @@ private:
     bool  _pt_pull = false;             // Alt on an anchor under the pen: new handles
     GLuint _stencil_tex = 0;
     std::string _stencil_key;           // what _stencil_tex was built from
+    float _stencil_win[4] = {0.0f, 0.0f, 1.0f, 1.0f};   // and the part of the frame it covers
+
+    // The canvas: the mask editor's view over the preview's pixels, reset
+    // when their size changes.
+    mask::View _view;
+    int _view_w = 0, _view_h = 0;
+    bool _panning = false;
 
     // ---- the drawing tools ----
     enum class DrawTool { Select, Points, Shape, Eraser, Path, Pen };
@@ -181,8 +215,13 @@ private:
     bool _shapes_edited = false;
     std::vector<StencilPreset> _saved;  // refreshed when the load popup opens
     std::vector<StencilPreset> _in_dataset;
+    StencilSetMenu _set_menu;
+    std::optional<EditRequest> _edit_request;
+    std::optional<StencilPreset> _editing;  // what Save changes writes over
     std::string _workspace;
     bool _browse_requested = false;
+    std::function<MaskModelFiles()> _pick_model;
+    bool _model_missing = false;        // under _mu: a prompt wants one
     std::string _save_name;
     std::string _saved_msg;
     bool _saved_msg_err = false;

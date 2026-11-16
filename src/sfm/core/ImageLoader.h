@@ -46,18 +46,20 @@
 #include <utility>
 #include <vector>
 
-#include "sfm/core/HostMemory.h"
+#include "core/HardwareThreads.h"
+#include "core/HostMemory.h"
 #include "sfm/core/Image.h"
 
 namespace sfm {
 
 struct ImageLoadOptions {
     int max_image_size = 3200;    // long-edge clamp, COLMAP's default
-    int num_threads = 0;          // 0 = hardware_concurrency, 1 = decode inline
+    int num_threads = 0;          // 0 = hardware_threads(), 1 = decode inline
     bool want_color = false;      // also decode a downscaled RGB buffer (for point colors)
     // The files' colour space; decoded pixels are converted to sRGB.
     std::string gamut;
     std::optional<bool> is_linear;
+    colorspace::Exposure exposure;
     // Keypoint masks (sfm/core/Mask.h), one per entry of the `paths` passed to
     // loadImagesInOrder and in the same order; "" means "no mask for this
     // image". Empty (the default) skips mask decoding entirely. Masks are
@@ -90,7 +92,7 @@ struct ImageLoadOptions {
 // very files being decoded. Falls back to the historical 1 GiB when the
 // platform will not say how much memory it has.
 inline size_t defaultDecodeBudget() {
-    const size_t total = physicalRamBytes();
+    const size_t total = spirula::physicalRamBytes();
     if (total == 0) return 1ull << 30;
     return std::min<size_t>(std::max<size_t>(total / 4, 1ull << 30), 8ull << 30);
 }
@@ -142,12 +144,14 @@ inline ImageLoadPlan planImageLoad(const std::vector<std::pair<int, int>>& dims,
     // image either way.
     const size_t masks = (opt.mask_paths.empty() ? 0 : 1) +
                          (opt.feature_mask_paths.empty() ? 0 : 1);
-    plan.decode_peak_bytes =
-        maxPix * 3 + maxOutPix * (opt.want_color ? 7 : 4) + maxOutPix * 2 * masks;
-    plan.held_bytes = maxOutPix * (opt.want_color ? 7 : 4)  // gray float (+ RGB u8)
+    // An exposure keeps the unexposed colour beside the exposed (GrayImage::color).
+    const size_t colours = opt.want_color ? (opt.exposure.active() ? 2 : 1) : 0;
+    plan.decode_peak_bytes = maxPix * 3 * (colours > 1 ? 2 : 1) +
+                             maxOutPix * (4 + 3 * colours) + maxOutPix * 2 * masks;
+    plan.held_bytes = maxOutPix * (4 + 3 * colours)  // gray float (+ RGB u8)
                     + (masks ? maxOutPix : 0);
 
-    unsigned hc = std::thread::hardware_concurrency();
+    unsigned hc = spirula::hardware_threads();
     int want = opt.num_threads > 0 ? opt.num_threads : (hc > 0 ? (int)hc : 1);
     const size_t budget =
         opt.memory_budget_bytes ? opt.memory_budget_bytes : defaultDecodeBudget();
@@ -185,7 +189,7 @@ inline void loadImagesInOrder(const std::vector<std::string>& paths, const Image
         try {
             out = loadGrayImage(paths[i], opt.max_image_size, opt.want_color, mp,
                                 opt.gamut, opt.is_linear, opt.flip_mask,
-                                opt.apply_exif_orientation, fmp);
+                                opt.apply_exif_orientation, fmp, opt.exposure);
         } catch (const std::exception& e) {
             err = e.what();
         }

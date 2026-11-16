@@ -69,7 +69,7 @@ add_compile_definitions(SS_SOURCE_ROOT="${SS_ROOT}")
 
 # The version the apps report with --version. Declared here and nowhere else;
 # it used to be read out of pyproject.toml, back when there was a package.
-set(SS_VERSION "2026.9.30")
+set(SS_VERSION "2026.11.12")
 
 # The commit goes in it too, so a crash report names an exact tree without
 # anyone having to bump a string by hand. Read at configure time, which is
@@ -186,6 +186,15 @@ else()
     option(SS_BUILD_SAM "Build the inference layer + SAM segmentation" OFF)
 endif()
 
+# MPSGraph attention and GEMM for the inference layer on macOS
+# (src/nn/OpMetal.mm), sharing MoltenVK's buffers through VK_EXT_metal_objects.
+# Whether it runs is SS_NN_METAL=0|1 at runtime; this only decides it is built.
+if(APPLE)
+    option(SS_NN_METAL "Build the inference layer's Metal path (MPSGraph)" ON)
+else()
+    set(SS_NN_METAL OFF)
+endif()
+
 # ---------------------------------------------------------------------------
 # Localization (src/i18n/, docs/i18n.md)
 #
@@ -245,12 +254,12 @@ if(NOT SS_FONT_CJK MATCHES "^(fetch|none|sc|tc|jp|kr|all)$")
 endif()
 
 # ---------------------------------------------------------------------------
-# Patent-encumbered modules: src/video/ (H.264 / H.265 / AV1 decode and encode),
-# the one part of this GPLv3 tree with third-party patent exposure. OFF by
-# default, deliberately; off, ffmpeg does the work. docs/build.md explains.
+# Patent-encumbered modules: src/video/ (H.264 / H.265 / AV1 video, HEIF
+# stills), the one part of this GPLv3 tree with third-party patent exposure.
+# OFF by default, deliberately: ffmpeg does the work. docs/build.md explains.
 # ---------------------------------------------------------------------------
 option(SS_ENABLE_PATENTED
-    "Compile patent-encumbered modules (in-process H.264/H.265/AV1 video decode and encode)"
+    "Compile patent-encumbered modules (in-process H.264/H.265/AV1 video decode and encode, HEIC photos)"
     OFF)
 if(SS_ENABLE_PATENTED AND NOT SS_BUILD_SAM)
     message(FATAL_ERROR

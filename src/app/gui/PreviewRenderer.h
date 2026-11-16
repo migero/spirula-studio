@@ -1,20 +1,7 @@
 #pragma once
 
-// PreviewRenderer -- pure-OpenGL preview of geometry the engine is not
-// rendering, into an offscreen FBO texture:
-//
-//   * the SfM sparse point cloud (vertex-colored) + training-camera frusta,
-//     shown by the viewport between "dataset loaded" and "training started",
-//     when the engine has nothing to render yet;
-//   * an extracted triangle mesh (vertex colors, or a baked texture atlas),
-//     which is what the mesh viewer and the meshing preview show.
-//
-// All of it is built in the same Z-up normalized frame the viewport
-// navigates, and the vertex shader implements the same camera models as the
-// engine viewer (pinhole / fisheye-equidistant / fisheye-equisolid /
-// equirectangular), so switching between a preview and an engine render is
-// seamless -- and a splat render and a mesh render of the same scene, shown
-// side by side, are the same view.
+// OpenGL point-cloud, camera and mesh previews in the viewport's normalized frame.
+// Projection models match the engine viewer.
 
 #include "app/gui/render/TransitionFx.h"
 #include "data/DatasetParser.h"
@@ -28,10 +15,9 @@ namespace spirula { class TrainerSession; struct RegionOverlay; }
 
 namespace gui {
 
-// Projection selector for render() (matches ViewportPanel's camera-model
-// dropdown order / the web client's #camera-model).
+// Values match CameraModelType and the persisted viewport lens IDs.
 enum class PreviewProjection {
-    Pinhole = 0, Fisheye, Equisolid, Equirectangular
+    Pinhole = 0, Fisheye, Equisolid, Equirectangular, Orthographic
 };
 
 // How a frame for a FILE is drawn, as opposed to one for the viewport
@@ -109,9 +95,6 @@ public:
                     float scene_radius, float view_dist,
                     const float view_target[3], bool show_cams,
                     float frustum_scale, bool show_grid,
-                    // How far an orthographic view's camera was pulled back
-                    // along its axis (ViewportPanel::ortho_pullback), 0 if not.
-                    float ortho_back = 0.0f,
                     const PreviewStyle* style = nullptr);
 
     // A region's boundary drawn over the cloud (app/webviewer/RegionOverlay.h),
@@ -181,8 +164,7 @@ private:
     float _t2n[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
     float _t2n_scale = 1.0f;         // normalized units per train unit
     int64_t _num_points = 0;
-    // Host copy of the displayed (stride-sampled, normalized-frame) points
-    // for double-click picking. CPU RAM only.
+    // Normalized-frame points for double-click picking.
     std::vector<float> _pick_xyz;
     std::vector<float> _pts_rgb;   // the displayed points' own colours
     int64_t _pts_stride = 1;
@@ -206,7 +188,7 @@ private:
     std::vector<float> _ov_dash;      // per layer, dash period
     int _u_alpha = -1, _u_dash = -1;
     void upload_overlay();
-    void draw_overlay(const float view[16]);
+    void draw_overlay(const float view[16], bool orthographic);
     void destroy_overlay_gl();
 
     unsigned _fbo = 0, _color_tex = 0, _depth_rb = 0;

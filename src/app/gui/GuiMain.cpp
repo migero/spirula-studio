@@ -2,6 +2,7 @@
 // core context (lowest version that also satisfies macOS) + Dear ImGui
 // bootstrap, then hands every frame to gui::GuiApp.
 
+#include "i18n/Message.h"
 #include "app/Tools.h"
 #include "i18n/catalog/Log.h"
 #include "app/AppPaths.h"
@@ -13,6 +14,7 @@
 #include "app/gui/GuiApp.h"
 #include "app/gui/Layout.h"
 #include "app/gui/NavCamera.h"
+#include "app/gui/VulkanPrime.h"
 #include "i18n/catalog/Brand.h"
 
 #ifdef _WIN32
@@ -143,6 +145,7 @@ bool ui_busy() {
 }  // namespace
 
 int spirula_gui_main(int argc, char** argv) {
+    spirula::i18n::set_terminal_output(false);
     // First, and before anything slow: the console is on screen until it goes.
 #ifdef _WIN32
     release_own_console();
@@ -158,6 +161,8 @@ int spirula_gui_main(int argc, char** argv) {
     set_no_auto_fetch();
     // Before the window maps: that is when the shell looks up its entry.
     gui::register_desktop_entry();
+    // Must precede any GL context (VulkanPrime.h).
+    gui::prime_vulkan_driver();
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) {
@@ -196,7 +201,7 @@ int spirula_gui_main(int argc, char** argv) {
 
     // The title is set from the catalog below, once GuiApp has settled the
     // language; this is only what the window is born with.
-    GLFWwindow* window = glfwCreateWindow(win_w, win_h, "Spirula Studio",
+    GLFWwindow* window = glfwCreateWindow(win_w, win_h, "Spirula Studio " SS_VERSION,
                                           nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "%s\n",
@@ -255,16 +260,13 @@ int spirula_gui_main(int argc, char** argv) {
                 if (argv[i] && argv[i][0]) args.push_back(argv[i]);
             if (!args.empty()) app.handle_drop(args);
         }
-        // The title bar is interface copy too, and the language it is in is
-        // only settled after GuiApp has read its settings -- and changes again
-        // whenever the picker does. Comparing the string is enough of a
-        // change test: it is immortal .rodata that the current language
-        // selects, so this is one pointer-deep compare per frame.
-        std::string title;
+        // Catalog strings have static lifetime; a language change selects a new one.
+        const char* title_name = nullptr;
         auto sync_title = [&] {
             const char* want = spirula::i18n::msg::brand::window_title.get();
-            if (title == want) return;
-            title = want;
+            if (title_name == want) return;
+            title_name = want;
+            const std::string title = std::string(want) + " - v" SS_VERSION;
             glfwSetWindowTitle(window, title.c_str());
         };
         sync_title();
@@ -294,6 +296,7 @@ int spirula_gui_main(int argc, char** argv) {
             // After the backend's own mouse update, so an injected position
             // is the later event and wins for this frame.
             const bool scripted = gui::automation::begin_frame();
+            if (const auto d = gui::automation::take_drop(); !d.empty()) app.handle_drop(d);
             ImGui::NewFrame();
             app.frame();
             const bool busy = ui_busy() || scripted || app.animating();

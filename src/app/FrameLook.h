@@ -36,9 +36,12 @@ struct FrameLook {
     // pano360_sharpen's 0..100, applied to the canvas before the views are
     // resampled. Preview and extraction read the same field.
     int pano_sharpen = 0;
-    // Fisheye circles side by side in one frame (packed_lens_count); two or
+    // Fisheye circles packed into one frame (packed_lens_count); two or
     // more are cut apart into cam0/, cam1/ ... as a multi-track file's are.
     int packed_lenses = 0;
+    // A .cube colour LUT (app/CubeLut.h) mapped over every decoded picture
+    // before anything else touches it; empty = the colours as decoded.
+    std::string lut;
     bool pano() const { return eac.valid() && !views.empty(); }
 };
 
@@ -85,9 +88,10 @@ void turn_normals(const sfm::ExifTransform& t, std::vector<float>& xyz,
 // this header, and only SS_BUILD_SAM ones link ss_nn.
 inline nn::Image load_upright(const std::string& file, const std::string& gamut,
                               std::optional<bool> is_linear,
+                              const colorspace::Exposure& exposure,
                               sfm::ExifTransform& turn) {
     turn = photo_turn(file);
-    nn::Image img = nn::load_image(file, gamut, is_linear);
+    nn::Image img = nn::load_image(file, gamut, is_linear, exposure);
     if (!img.empty())
         turn_pixels(turn, img.channels, img.data, img.width, img.height);
     return img;

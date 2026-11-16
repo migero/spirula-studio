@@ -149,6 +149,16 @@ TOOLS = [
         },
     },
     {
+        "name": "gui_drop",
+        "description": "Drop files or folders on the window, as a drag from a "
+                       "file manager would.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}}},
+            "required": ["paths"],
+        },
+    },
+    {
         "name": "gui_screenshot",
         "description": "The current framebuffer, as an image.",
         "inputSchema": {
@@ -234,6 +244,7 @@ def run_tool(name, a):
             point_args(a), value=a["value"],
             enter="1" if a.get("enter", True) else "0")),
         "gui_wait": ("/ui/wait", lambda a: {"frames": a.get("frames", 4)}),
+        "gui_drop": ("/ui/drop", lambda a: {"paths": "\n".join(a["paths"])}),
     }
     if name not in routes:
         return [{"type": "text", "text": "unknown tool: " + name}], True
@@ -270,9 +281,10 @@ def handle(msg):
 
 
 def main():
-    out = sys.stdout
-    for line in sys.stdin:
-        line = line.strip()
+    # Bytes: Windows text mode decodes stdin as ANSI and writes \r\n.
+    out = sys.stdout.buffer
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", "replace").strip()
         if not line:
             continue
         try:
@@ -294,7 +306,7 @@ def main():
                                               % msg.get("method")}}
             else:
                 reply = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
-        out.write(json.dumps(reply) + "\n")
+        out.write((json.dumps(reply) + "\n").encode("utf-8"))
         out.flush()
 
 

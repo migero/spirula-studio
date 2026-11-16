@@ -177,22 +177,43 @@ VkInstance createInstance(bool validation, VkDebugUtilsMessengerEXT* messenger) 
 
     std::vector<const char*> layers;
     std::vector<const char*> exts;
+    bool layer_settings = false;
     if (validation) {
+        const char* kLayer = "VK_LAYER_KHRONOS_validation";
         uint32_t n = 0;
         vkEnumerateInstanceLayerProperties(&n, nullptr);
         std::vector<VkLayerProperties> props(n);
         vkEnumerateInstanceLayerProperties(&n, props.data());
         for (auto& p : props)
-            if (std::strcmp(p.layerName, "VK_LAYER_KHRONOS_validation") == 0)
-                layers.push_back("VK_LAYER_KHRONOS_validation");
-        if (layers.empty())
+            if (std::strcmp(p.layerName, kLayer) == 0) layers.push_back(kLayer);
+        if (layers.empty()) {
             NN_LOG_WARN("[vk] validation requested but the layer is not installed\n");
-        else
+        } else {
             exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            n = 0;
+            vkEnumerateInstanceExtensionProperties(kLayer, &n, nullptr);
+            std::vector<VkExtensionProperties> lext(n);
+            vkEnumerateInstanceExtensionProperties(kLayer, &n, lext.data());
+            for (auto& e : lext)
+                if (std::strcmp(e.extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) == 0)
+                    layer_settings = true;
+            if (layer_settings) exts.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        }
     }
 
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
+
+    // NVIDIA 595 follows vkCmdDecodeVideoKHR's codec pNext again inside
+    // vkQueueSubmit. Handle wrapping hands the driver a copy freed when the
+    // record call returns, so a validated decode segfaults at its first submit.
+    const VkBool32 no_wrap = VK_FALSE;
+    VkLayerSettingEXT wrap_setting{"VK_LAYER_KHRONOS_validation", "unique_handles",
+                                   VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &no_wrap};
+    VkLayerSettingsCreateInfoEXT lsci{VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT};
+    lsci.settingCount = 1;
+    lsci.pSettings = &wrap_setting;
+    if (layer_settings) ici.pNext = &lsci;
 
     // A driver implementing only a subset of Vulkan (MoltenVK, the sole driver
     // on macOS) stays hidden from vkEnumeratePhysicalDevices unless the
@@ -528,6 +549,10 @@ void Context::pickPhysicalDevice(const ContextOptions& opts) {
     vkGetPhysicalDeviceMemoryProperties(physical_, &mem_props_);
 }
 
+spirula::vkmemory::Budget Context::memoryBudget() const {
+    return memory_budget_ ? spirula::vkmemory::queryBudget(physical_) : spirula::vkmemory::Budget{};
+}
+
 void Context::createDevice(const ContextOptions& opts) {
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);
@@ -569,6 +594,8 @@ void Context::createDevice(const ContextOptions& opts) {
     };
 
     std::vector<const char*> exts;
+    memory_budget_ = has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (memory_budget_) exts.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     // Mandatory where advertised: the spec forbids creating a device from a
     // portability physical device without it. Spelled out rather than using
     // the macro, which is behind VK_ENABLE_BETA_EXTENSIONS.
@@ -583,12 +610,18 @@ void Context::createDevice(const ContextOptions& opts) {
         p2.pNext = &sp;
         vkGetPhysicalDeviceProperties2(physical_, &p2);
         // Pin the widest size the device offers that our 64-wide-X kernels can
-        // still fill; Intel/ANV's varying width is the failure this avoids.
+        // still fill; Intel/ANV's varying width is the failure this avoids. On
+        // RDNA2, 64 against 32: SAM 2 + GDINO 6% faster, MoGe 1.3% slower.
         preferred_subgroup_ = std::min<uint32_t>(sp.maxSubgroupSize, 64u);
         preferred_subgroup_ = std::max<uint32_t>(preferred_subgroup_, sp.minSubgroupSize);
         NN_LOG_DEBUG("[vk] subgroup size pinned to %u (range %u..%u)\n",
                      preferred_subgroup_, sp.minSubgroupSize, sp.maxSubgroupSize);
     }
+
+    // Metal interop (nn/vk/MetalInterop.mm): MoltenVK's MTLBuffer behind each
+    // allocation and the MTLSharedEvent behind the timeline.
+    metal_objects_ = has("VK_EXT_metal_objects");
+    if (metal_objects_) exts.push_back("VK_EXT_metal_objects");
 
     // ---- 64-bit integers -------------------------------------------------
     // Only the `*_wide` modules use them, to address past 4 GiB. Contained like
@@ -608,6 +641,8 @@ void Context::createDevice(const ContextOptions& opts) {
     // module is first acquired -- so leaving the flag false is enough to keep
     // the capability off the device entirely.
 #ifdef VK_KHR_cooperative_matrix
+    const char* coop_env = spirula::env("NN_COOPMAT");
+    const bool coop_forced_on = coop_env && std::strcmp(coop_env, "1") == 0;
     if (!envFlagDefaultOn("NN_COOPMAT")) {
         coopmat_reason_ = "disabled by SS_NN_COOPMAT=0";
     } else if (!has(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
@@ -618,6 +653,12 @@ void Context::createDevice(const ContextOptions& opts) {
         VkPhysicalDeviceVulkan12Features p12{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         pcm.pNext = &p12;
+#ifdef VK_EXT_shader_atomic_float
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT fatomic{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        const bool has_atomic_float = has(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+        if (has_atomic_float) p12.pNext = &fatomic;
+#endif
         VkPhysicalDeviceFeatures2 pf2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         pf2.pNext = &pcm;
         vkGetPhysicalDeviceFeatures2(physical_, &pf2);
@@ -628,11 +669,23 @@ void Context::createDevice(const ContextOptions& opts) {
         pp2.pNext = &pcmp;
         vkGetPhysicalDeviceProperties2(physical_, &pp2);
 
+        // Pre-RDNA3 AMD lacks WMMA; driver emulates cooperative matrix in
+        // software, producing NaNs and ~250x slowdown. Native fadd starts at RDNA3.
+        const bool is_amd = pp2.properties.vendorID == 0x1002;
+#ifdef VK_EXT_shader_atomic_float
+        const bool amd_has_matrix_hw = has_atomic_float && fatomic.shaderBufferFloat32AtomicAdd;
+#else
+        const bool amd_has_matrix_hw = false;
+#endif
+        const bool amd_emulated_coop = is_amd && !amd_has_matrix_hw;
+
         // Reported in the order the shader would trip over them.
         if (!pcm.cooperativeMatrix)
             coopmat_reason_ = "cooperativeMatrix feature not supported";
         else if (!(pcmp.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT))
             coopmat_reason_ = "cooperative matrix is not supported in compute shaders";
+        else if (!coop_forced_on && amd_emulated_coop)
+            coopmat_reason_ = "AMD pre-RDNA3 GPU lacks hardware matrix cores (driver cooperative matrix is emulated and unstable)";
         else if (!p12.shaderFloat16)
             coopmat_reason_ = "no shaderFloat16";
         else if (!p12.vulkanMemoryModel || !p12.vulkanMemoryModelDeviceScope)
@@ -772,6 +825,19 @@ void Context::createDevice(const ContextOptions& opts) {
     }
 #endif
 
+    // A transfer-only family is the copy engine: work on it runs beside the
+    // compute queue rather than between its dispatches.
+    if (envFlagDefaultOn("NN_TRANSFER_QUEUE"))
+        for (uint32_t i = 0; i < nq; ++i) {
+            const VkQueueFlags f = qf2[i].queueFamilyProperties.queueFlags;
+            if ((f & VK_QUEUE_TRANSFER_BIT) &&
+                !(f & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) &&
+                i != video_queue_family_ && i != encode_queue_family_) {
+                transfer_family_ = i;
+                break;
+            }
+        }
+
     // ---- queues ---------------------------------------------------------
     const float prio = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -788,6 +854,10 @@ void Context::createDevice(const ContextOptions& opts) {
         if (encode_queue_family_ != UINT32_MAX && encode_queue_family_ != queue_family_ &&
             encode_queue_family_ != video_queue_family_) {
             q.queueFamilyIndex = encode_queue_family_;
+            qcis.push_back(q);
+        }
+        if (transfer_family_ != UINT32_MAX) {
+            q.queueFamilyIndex = transfer_family_;
             qcis.push_back(q);
         }
     }
@@ -867,6 +937,8 @@ void Context::createDevice(const ContextOptions& opts) {
                          video_queue_family_ == queue_family_ ? 0 : 0, &video_queue_);
     if (encode_queue_family_ != UINT32_MAX)
         vkGetDeviceQueue(device_, encode_queue_family_, 0, &encode_queue_);
+    if (transfer_family_ != UINT32_MAX)
+        vkGetDeviceQueue(device_, transfer_family_, 0, &transfer_queue_);
 
 }
 

@@ -16,6 +16,7 @@
 // driver that resets under a long solve. Either way the screen reads the same
 // typed status, from the event stream or from the snapshot the child writes.
 
+#include "app/gui/DatasetPlan.h"
 #include "app/gui/DatasetPrep.h"
 #include "core/Env.h"
 #include "app/gui/SfmProgress.h"
@@ -25,6 +26,7 @@
 #endif
 #include "app/gui/FilmReel.h"
 #include "app/gui/GeometryRunner.h"
+#include "app/gui/LidarStep.h"
 #include "app/gui/PrepProgress.h"
 #include "i18n/catalog/Dataset.h"
 
@@ -71,6 +73,34 @@ inline bool sfm_model_is_fisheye(const std::string& m) {
     return m == "opencv-fisheye" || m == "thin-prism-fisheye";
 }
 
+// What `spirula sfm` spells each of SfmJob's choices as, in index order.
+inline const char* const kSfmQuality[] = {"low", "medium", "high", "extreme"};
+inline const char* const kSfmDataType[] = {"individual", "video", "internet"};
+inline const char* const kSfmCameraMode[] = {"single", "folder", "image"};
+inline const char* const kSfmPairs[] = {"auto", "exhaustive", "sequential",
+                                        "prefilter"};
+inline const char* const kSfmMapper[] = {"flat", "bottom-up", "global"};
+inline const char* const kSfmFeatures[] = {"sift", "aliked-n16rot", "aliked-n32",
+                                           "loma-b128", "loma-b"};
+inline const char* const kSfmMetricGps[] = {"none", "horizontal", "full", "auto"};
+inline const char* const kSfmSensorGauge[] = {"none", "up", "auto"};
+inline const char* const kSfmExifAttitude[] = {"none", "up", "auto"};
+
+template <int N>
+const char* sfm_pick(const char* const (&table)[N], int i, int fallback = 0) {
+    return table[(i >= 0 && i < N) ? i : fallback];
+}
+
+// SfmJob::matcher: 0 brute force, 1 "the learned matcher for this frontend"
+// (a learned matcher only reads the descriptors it was trained on, so which one
+// follows --features), 2 FlexGlue, which reads pixels and takes any frontend.
+inline const char* sfm_matcher_for(int features, int matcher) {
+    if (matcher == 2) return "flexglue";
+    if (features == 0 || matcher != 1) return "bruteforce";
+    const std::string f = sfm_pick(kSfmFeatures, features);
+    return f.rfind("loma", 0) == 0 ? sfm_pick(kSfmFeatures, features) : "lightglue";
+}
+
 // SS_SFM_SUBPROCESS=1 starts a session with the escape hatch below on.
 inline bool sfm_subprocess_default() {
     const char* v = spirula::env("SFM_SUBPROCESS");
@@ -83,15 +113,14 @@ struct SfmJob {
     // ... and so is this: the depth and normal maps are written after the
     // reconstruction, from the dataset it produced, whichever engine made it.
     GeometryJob geometry;
+    // Laser scans the model is aligned with; they replace the geometry step.
+    LidarJob lidar;
+    DenseJob dense;
 
     // ---- reconstruction ----
-    // Replace the model in the output folder. A run left to itself REUSES one,
-    // which is how a finished dataset gets masks and geometry without a rebuild.
-    bool redo_model = false;
-    // Did these settings write the stamp beside that model (ReconStamp.h)?
-    // Only then does a difference from it mean the user asked for a different
-    // model; a panel pointed at a dataset it did not build is at its defaults.
-    bool settings_built_model = false;
+    // What the user asked to redo or keep; the plan (DatasetPlan.h) decides
+    // the rest, step by step, against what the workspace records.
+    PlanRequest request;
     // Keep feature detection out of the masked areas too, not only training.
     // Off still writes the masks -- worth it where what they cover holds still
     // and carries the finer detail the cameras converge on.
@@ -109,10 +138,6 @@ struct SfmJob {
     // Pair selection only: also match each image with its neighbours in file
     // order, the converse of the above.
     bool prefilter_sequential = false;
-    // Hand the reconstruction the frame order of every video and of every
-    // folder marked as shot in order (the manifest's `sequences:`), so the
-    // mapper places an image among its neighbours before it consults the rest.
-    bool use_sequence = true;
     float init_focal_px = 0.0f;       // 0 = guess from EXIF / image size
     // Starting distortion, "k1,k2,..." in the lens model's own order; empty
     // starts at zero.
@@ -130,21 +155,18 @@ struct SfmJob {
     // 0 flat, 1 bottom-up. Flat for every capture, whatever its size: there is
     // no automatic switch, here or in `spirula sfm`.
     int mapper = 0;
-    // 0 SIFT, 1 ALIKED-n16rot, 2 ALIKED-n32. The learned ones fetch a
-    // checkpoint on first use and run on their own resolution ladder, so the
-    // quality preset means something different for each -- which is why this
-    // is a frontend choice and not a quality level.
+    // An index into kSfmFeatures. A frontend choice, not a quality level: the
+    // learned ones run on their own resolution ladder, so the quality preset
+    // means something different for each.
     int features = 0;
-    // 0 brute force, 1 LightGlue. Only meaningful with a learned frontend, and
-    // an order of magnitude slower per pair -- the panel greys it out for SIFT
-    // and the CLI refuses the combination outright.
+    // 0 brute force, 1 the frontend's learned matcher (not for SIFT), 2
+    // FlexGlue (any frontend). See sfm_matcher_for.
     int matcher = 0;
-    // Scale and heading from the photographs' EXIF GPS: 0 off, 1 (the default)
-    // latitude and longitude, 2 with altitude. 1 leaves the tilt to the
-    // cameras, which a city capture's altitude is too biased to give.
-    int metric_gps = 1;
-    // The video's own IMU and GPS track: 0 off, 1 orientation only, 2 (the
-    // default) orientation and whatever metric scale passes its own checks.
+    // Any GPS, video or EXIF: 0 off, 1 latitude and longitude, 2 with altitude,
+    // 3 (default) the CLI's `auto`. Saved in presets, so `auto` is appended.
+    int metric_gps = 3;
+    // The video's own IMU: 0 off, 1 orientation only, 2 (the default)
+    // orientation and the accelerometer's scale where it passes its checks.
     int sensor_gauge = 2;
     // The camera attitude a drone writes into each photo: 0 off, 1 orientation
     // only, 2 (the default) orientation and north.
@@ -175,6 +197,9 @@ struct SfmJob {
     // what those detectors and models were trained on. Empty = Rec.709/sRGB.
     std::string image_gamut;
     std::optional<bool> image_is_linear;
+    // What the detectors and models see, brightened in linear light: "", "auto"
+    // or stops (core/ColorSpace.h). Training reads the files as they are.
+    std::string image_exposure;
     // false: the sparse point cloud stays sRGB (train with point-color-gamut
     // Rec.709). true: written in the images' space, the trainer's default.
     bool point_color_in_image_space = false;
@@ -219,6 +244,11 @@ public:
     void cancel();
 
     State state() const { return _state.load(); }
+    // The frames are out and the run is waiting to be told they are the ones
+    // wanted (PrepJob::review_frames). The settings that sort them are read
+    // when it is told.
+    bool reviewing() const { return _reviewing.load(); }
+    void continue_review() { _review_go = true; }
     // Which step the run is on, how far through, and its lines -- everything
     // the dataset screen draws.
     RunProgress& steps() { return _prog; }
@@ -258,6 +288,9 @@ public:
     // leaving the dataset screen, or closing the app. A no-op while a run is
     // going, and for a job that asked to keep them.
     void sweep_intermediates();
+    // Never sweeps them: the matches were edited by hand, and a run that
+    // matched again would throw the edit away.
+    void keep_intermediates();
     // Done, but under half the images registered (or a high reprojection
     // error). The dataset is usable; the user should know it has gaps.
     bool partial() const { return _partial.load(); }
@@ -270,12 +303,14 @@ private:
     // The three parts of update(), applied where the run reaches them.
     void take_reconstruction(SfmJob& job);
     void take_masking(PrepJob& prep);
+    void take_selection(PrepJob& prep);
     void take_geometry(SfmJob& job);
+    void take_dense(SfmJob& job);
     void log(const std::string& line, bool detail = true);
     void set_stage(Stage st, const std::string& s);
-    // Stage changes driven by the child's output, which repeats a
-    // stage's lines many times over.
-    void set_stage_if_new(Stage st, const char* s);
+    // Stage changes driven by the child's output, which repeats a stage's
+    // lines many times over. `relabel` keeps the running step's bar.
+    void set_stage_if_new(Stage st, const char* s, bool relabel = false);
     // Where the run is: polled from the child's status.bin, or handed over
     // by the in-process run. apply_status is what both feed.
     void poll_status();
@@ -289,18 +324,17 @@ private:
 #endif
     std::vector<std::string> recon_args(const SfmJob& job,
                                         const PrepResult& prep);
-    // Model flags shared by the workspace stamp and both launch paths. The
-    // frozen execution selector is appended only when launching, so changing
-    // GPUs does not invalidate a completed model.
 
     std::thread _worker;
     std::atomic<State> _state{State::Idle};
     std::atomic<bool> _cancel{false};
+    std::atomic<bool> _reviewing{false}, _review_go{false};
     std::atomic<bool> _partial{false};
     std::atomic<bool> _not_metric{false};
     // The child said how it ended, so the exit code need not be interpreted.
     bool _have_status = false;
     int64_t _status_mtime = 0;
+    MappingWork _map_work;
     RunProgress _prog;
     RunFilms _films;
     std::mutex _mu;

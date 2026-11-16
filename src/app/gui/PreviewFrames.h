@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,7 +27,7 @@ namespace gui {
 struct PreviewFrame {
     std::string path;       // empty for a video: decoded on demand
     long long   index = 0;
-    float       position = 0.0f;   // 0..1 through the capture
+    float       position = 0.0f;   // 0..1 through the capture, or its clip
 };
 
 // How an input is read, how long it is, and what the run makes of it. One
@@ -41,6 +42,10 @@ struct PreviewSource {
     // one that needs a timestamp.
     double video_seconds = 0.0;
     long long video_frames = 0;
+    // The part of the video the run extracts, seconds; `clip_end` 0 is the
+    // end. Offers stay inside it and `position` runs 0..1 across it.
+    double clip_start = 0.0, clip_end = 0.0;
+    long long clip_first = 0, clip_frames = 0;   // ... as frames, once probed
     // Filled by the caller from the dataset job, never guessed here.
     app::FrameLook look;
     // The run's device request (PrepJob::device), so the preview decodes and
@@ -51,9 +56,11 @@ struct PreviewSource {
     // other way.
     std::string device_error;
     int tracks = 1;         // video tracks in the file
+    int lens = -1;          // the one kept (PrepInput::active_lens), -1 all
     // The same input color metadata passed to dataset masking.
     std::string image_gamut;
     std::optional<bool> image_is_linear;
+    std::string image_exposure;
 
     // Photos read as the file STORES them rather than as it asks to be shown.
     // For a panel whose frames come with a camera: the camera describes the
@@ -61,12 +68,24 @@ struct PreviewSource {
     bool photos_as_stored = false;
 };
 
+// Whether a preview may decode on the inference device now, and the lock a
+// decode holds while it does, so whoever takes the device back can wait it out.
+struct DecodeGate {
+    std::atomic<bool> allowed{false};
+    std::mutex busy;
+};
+
+// `src` with the in-process decoder off unless `gate` allows it; `hold` keeps
+// the gate's lock while the copy is in use.
+PreviewSource gated(const PreviewSource& src, DecodeGate& gate,
+                    std::unique_lock<std::mutex>& hold);
+
 // The folders this input's frames land in under images/, and so what the
 // `folder` argument below selects. One empty name for a single camera.
 std::vector<std::string> preview_folders(const PreviewSource& src);
 
-// `offers` frames spread through the input. `all_files` comes back holding
-// every image of a photo folder (what a border fit reads), empty for a video.
+// `offers` frames spread through the input (0 = all frames). `all_files`
+// comes back holding every image of a photo folder, empty for a video.
 void collect_preview_frames(PreviewSource& src, int offers,
                             std::vector<PreviewFrame>& frames,
                             std::vector<std::string>& all_files,
@@ -78,9 +97,23 @@ bool load_preview_frame(const PreviewSource& src, const PreviewFrame& frame,
                         int folder, int& w, int& h, std::vector<uint8_t>& rgb,
                         std::string& error, const std::atomic<bool>& cancel);
 
+// The colour handling load_preview_frame gives a decoded video frame.
+void preview_to_srgb(const PreviewSource& src, std::vector<uint8_t>& rgb);
+
+struct PreviewPixels {
+    int w = 0, h = 0;
+    std::vector<uint8_t> rgb;
+};
+// `folders` of a video at `seconds`, from ONE ffmpeg run, each as
+// load_preview_frame's ffmpeg path leaves it. `keyframe` settles for the sync
+// sample at or before it; `max_side` > 0 scales a track down in ffmpeg.
+bool load_ffmpeg_stills(const PreviewSource& src, double seconds,
+                        const std::vector<int>& folders, bool keyframe, int max_side,
+                        std::vector<PreviewPixels>& out, const std::atomic<bool>& cancel);
+
 // A spread for a fit that wants several frames (the fisheye border): `samples`
 // of `files`, or for a video the first few hundred frames -- as far forward as
-// a decoder that cannot seek can afford -- and `offers` where ffmpeg seeks.
+// a decoder that cannot seek can afford -- and eight of `offers` where ffmpeg seeks.
 std::vector<PreviewFrame> spread_preview_frames(
     const PreviewSource& src, const std::vector<PreviewFrame>& offers,
     const std::vector<std::string>& files, int samples);

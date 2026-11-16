@@ -74,6 +74,7 @@ void engine_init_ppisp(int n_grids, std::string param_type, bool use_adagrad,
 // with bilagrid). When that index buffer is empty, fall back to identity.
 void _engine_ppisp_forward_current() {
     if (!engine().ppisp.enabled) return;
+    StepTimingScope timing(StepPart::Appearance, StepScale::Pixels);
 
     int H = engine().camera.height;
     int W = engine().camera.width;
@@ -81,6 +82,8 @@ void _engine_ppisp_forward_current() {
     if (C_batch <= 0) return;
     if (std::get<0>(engine().fwd.renders).data_ptr() == nullptr)
         throw std::runtime_error("engine_ppisp_forward: forward_3dgs must run first");
+    if (engine().fwd.rgb_fmt != PixelFormat::F32)
+        throw std::logic_error("engine_ppisp_forward: the render is not float32");
 
     // pre = current renders.rgb (pointer alias, no D2D copy). ppisp_forward
     // already accepts distinct in/out tensors, so we read pre and write a
@@ -105,6 +108,7 @@ void _engine_ppisp_forward_current() {
 
 void engine_ppisp_forward(TorchTensorView cam_indices) {
     if (!engine().ppisp.enabled) return;
+    StepTimingScope timing(StepPart::Appearance, StepScale::Pixels);
     // Repopulating with the same tensor is cheap (DeviceVector<int32_t> takes
     // a view of device memory when the source is on device).
     _set_cur_cam_indices(cam_indices);
@@ -172,6 +176,7 @@ float* _engine_ppisp_reg_loss_into(
     const std::array<float, (int)PPISPRegLossIndex::length>& loss_weights,
     bool compute_grad
 ) {
+    StepTimingScope timing(StepPart::Appearance, StepScale::Images);
     int N = (int)engine().ppisp.params.size<0>();
     int kRaw = ppisp_param_spec(engine().ppisp.param_type).num_raw_losses;
     int kLoss = (int)PPISPRegLossIndex::length;
@@ -222,10 +227,11 @@ float* _engine_ppisp_reg_loss_into(
             engine().ppisp.param_type, engine().ppisp.exposure_arithmetic_mean,
             v_params_tv);
 
-        // ppisp_grads += v_params_scratch (over all N * P floats).
+        // ppisp_grads = ppisp_grads * grad_scale + v_params_scratch: the
+        // passes' image gradient at the scale of one batch, the terms as is.
         size_t total = (size_t)N * engine().ppisp.num_params;
-        ppisp_add_into_grad(v_params_scratch,
-            engine().ppisp.grads.data_ptr(), total, kPpispStream);
+        ppisp_add_into_grad(v_params_scratch, engine().ppisp.grads.data_ptr(),
+            engine().optim.grad_scale, total, kPpispStream);
     }
 
     return losses_buf;
@@ -233,6 +239,7 @@ float* _engine_ppisp_reg_loss_into(
 
 void engine_ppisp_optim_step(int step, const PpispStepConfig& cfg) {
     if (!engine().ppisp.enabled) return;
+    StepTimingScope timing(StepPart::Appearance, StepScale::Images);
     _ensure_ppisp_optim_state();
     if (cfg.lr <= 0.0f) {
         // Still zero accumulated grads for next iteration to match other paths.
@@ -245,6 +252,11 @@ void engine_ppisp_optim_step(int step, const PpispStepConfig& cfg) {
     for (float w : cfg.reg_weights) if (w > 0.0f) { any_reg = true; break; }
     if (any_reg) {
         (void)_engine_ppisp_reg_loss_into(cfg.reg_weights, /*compute_grad=*/true);
+    } else if (engine().optim.grad_scale != 1.0f) {
+        ppisp_add_into_grad(nullptr, engine().ppisp.grads.data_ptr(),
+            engine().optim.grad_scale,
+            (size_t)engine().ppisp.params.size<0>() * engine().ppisp.num_params,
+            kPpispStream);
     }
 
     int64_t N = engine().ppisp.params.size<0>();
@@ -269,7 +281,7 @@ void engine_ppisp_optim_step(int step, const PpispStepConfig& cfg) {
             flat_view(engine().ppisp.g1.data_ptr()),
             flat_view(engine().ppisp.g2.data_ptr()),
             cfg.lr, step + 1, no_per_splat_steps,
-            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f,
+            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f, SbOptimCells{},
             /*grad_scale=*/1.0f, /*zero_grad=*/false);
     }
     engine().ppisp.grads.zero();

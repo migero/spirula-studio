@@ -58,8 +58,12 @@ expands into a short script of steps, and the frame loop applies exactly one
 step per frame: move, move, press, release, settle.
 
 `begin_frame()` runs between `ImGui_ImplGlfw_NewFrame()` and
-`ImGui::NewFrame()` — after the backend's own mouse update, so an injected
-position is the later event and wins. `end_frame()` runs after the draw data is
+`ImGui::NewFrame()`. During each scripted step it clears competing backend
+events and reapplies the last scripted pointer position. Visible windows also
+receive GLFW focus and cursor positioning. This keeps native cursor refreshes
+from replacing the scripted position between the move and press frames.
+Native input resumes after the script; offscreen operation uses the same
+ImGui event path. `end_frame()` runs after the draw data is
 rendered and before the buffers are swapped, which is where the item table for
 the finished frame is published and where a screenshot reads the back buffer.
 
@@ -122,10 +126,25 @@ sharing an id.
 | `/ui/key` | `keys=Ctrl+Shift+A` |
 | `/ui/text` | focus, select all, type `value=`, `enter=0` to leave it open |
 | `/ui/wait` | `frames=` |
+| `/ui/drop` | `paths=`, one per line: what dropping them on the window does |
 | `/ui/screenshot` | `width=` to downscale (area average), `format=jpg`, `quality=`, `path=` to write it server-side |
 
 Display coordinates are not framebuffer pixels on a HiDPI screen; `/ui/state`
 reports both and the scale between them.
+
+## Sparse editor to trainer regression
+
+Open a COLMAP dataset in the trainer, then open its `images.bin` through
+"Open a Model or Reconstruction" and enter Edit. Delete some points and save
+over the reconstruction. Return Home and choose "Back to Trainer": the point
+count and preview must match the edited `points3D.bin`. Issue #249 left the
+trainer's cached preview showing the original points until the dataset was
+explicitly reopened.
+
+Repeat with a fresh dataset and only a quarter turn, keeping every point and
+camera. The trainer must reload the saved orientation and turn auto-level off
+even though its framing key's path and element counts are unchanged. Saving
+a copy elsewhere must leave the original dataset's trainer preview alone.
 
 ## As an MCP server
 

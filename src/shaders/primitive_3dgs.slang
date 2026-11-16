@@ -9,11 +9,6 @@
 #undef CudaDeviceExport
 #endif
 
-// sigma-along-the-ray / depth is the EWA linearization's expansion parameter;
-// under this many sigmas the Gaussian straddles the projection singularity and
-// cov2d folds. Scale-free; 3DGUT culls the same splats through its sigma points.
-static const float EWA_NEAR_SIGMAS = 3.0f;
-
 struct SigmaPoints {
     float3 p[7];
     float w_mean[7];
@@ -438,9 +433,12 @@ void projection_3dgs<
     // transform Gaussian center to camera space
     float3 mean_c;
     posW2C(R, t, mean, mean_c);
-    float cull_z = (camera_model == CameraModelType::PINHOLE) ?
+    float cull_z = (camera_model == CameraModelType::PINHOLE ||
+                    camera_model == CameraModelType::ORTHOGRAPHIC) ?
         mean_c.z : length(mean_c);
-    depth = length(mean_c);
+    depth = camera_model == CameraModelType::ORTHOGRAPHIC ? mean_c.z : length(mean_c);
+    // Center only, as gsplat and PlayCanvas cull. A size-aware cull hides near splats from training that every
+    // other renderer still draws: -0.76 dB in gsplat on Mip-NeRF 360 room.
     if (!assume_valid && cull_z <= 0.0f) {
         aabb_xyxy = float4(0.0f);
         return;
@@ -451,7 +449,15 @@ void projection_3dgs<
     opacity = 1.0 / (1.0 + exp(-in_opacity));
 
     bool is_valid = true;
-    if (eval3d) {
+    if (camera_model == CameraModelType::ORTHOGRAPHIC) {
+        float3x3 covar, covar_c;
+        quat_scale_to_covar(normalize(quat), exp(scale), covar);
+        covarW2C(R, covar, covar_c);
+        mean2d = float2(fx * mean_c.x + cx, fy * mean_c.y + cy);
+        covar2d = float2x2(fx * fx * covar_c[0][0], fx * fy * covar_c[0][1],
+                          fx * fy * covar_c[1][0], fy * fy * covar_c[1][1]);
+    }
+    else if (eval3d) {
         SigmaPoints sigmas = world_gaussian_sigma_points(mean, exp(scale), normalize(quat), R, t);
         // SigmaPoints sigmas = world_gaussian_sigma_points(mean, exp(scale), quat, R, t);
 
@@ -490,14 +496,6 @@ void projection_3dgs<
         }
         float3x3 covar_c;
         covarW2C(R, covar, covar_c);
-
-        if (!assume_valid && camera_model == CameraModelType::PINHOLE) {
-            float sigma_r2 = covar_c[2][2];  // or dot(mean_c, mul(covar_c, mean_c)) / dot(mean_c, mean_c) for fisheye
-            if (cull_z * cull_z <= (EWA_NEAR_SIGMAS * EWA_NEAR_SIGMAS) * sigma_r2) {
-                aabb_xyxy = float4(0.0f);
-                return;
-            }
-        }
 
         if (camera_model == CameraModelType::PINHOLE)
             is_valid &= persp_proj_3dgs<D, assume_valid>(
@@ -732,3 +730,6 @@ _DEF_projection_3dgs_vjp_tiers(projection_3dgut_fisheye, _DiffProjection3DGS_3dg
 _DEF_projection_3dgs_vjp_tiers(projection_3dgut_equisolid, _DiffProjection3DGS_3dgut_equisolid)
 _DEF_projection_3dgs_vjp(projection_3dgut_equirect_none_vjp, _DiffProjection3DGS_3dgut_equirect_none, 1)
 
+
+_DEF_projection_3dgs(projection_3dgs_ortho_none, CameraModelType::ORTHOGRAPHIC, DistNone, 1, false, false)
+_DEF_projection_3dgs(projection_3dgut_ortho_none, CameraModelType::ORTHOGRAPHIC, DistNone, 1, false, true)

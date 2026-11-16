@@ -5,6 +5,7 @@
 #include "data/DatasetParser.h"
 #include "i18n/catalog/Data.h"
 #include "data/FastFloat.h"
+#include "data/FileBytes.h"
 #include "data/Json.h"
 
 #include "core/CameraModel.h"   // camera_model_from_name (CUDA-free)
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -86,23 +88,7 @@ struct PlyElement {
         for (const auto& p : props) s += ply_type_size(p.type);
         return s;
     }
-    int find(const char* n) const {
-        for (size_t i = 0; i < props.size(); i++)
-            if (props[i].name == n) return (int)i;
-        return -1;
-    }
 };
-
-std::string read_header_line(FILE* f, const std::string& path) {
-    std::string line;
-    for (;;) {
-        int c = std::fgetc(f);
-        if (c == EOF) throw std::runtime_error("PLY: truncated header in " + path);
-        if (c == '\n') break;
-        if (c != '\r') line += (char)c;
-    }
-    return line;
-}
 
 std::vector<std::string> split_ws(const std::string& s) {
     std::vector<std::string> out;
@@ -120,19 +106,26 @@ std::vector<std::string> split_ws(const std::string& s) {
 }  // namespace
 
 
-ColmapPoints3D read_ply_points(const std::string& path) {
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) throw std::runtime_error("PLY: cannot open " + path);
-    struct Closer { FILE* f; ~Closer() { std::fclose(f); } } closer{f};
+PlyVertexReader::PlyVertexReader(std::string bytes, std::string what)
+    : bytes_(std::move(bytes)), what_(std::move(what)) {
+    size_t pos = 0;
+    auto header_line = [&]() {
+        size_t nl = bytes_.find('\n', pos);
+        if (nl == std::string::npos)
+            throw std::runtime_error("PLY: truncated header in " + what_);
+        std::string line = bytes_.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        pos = nl + 1;
+        return line;
+    };
 
     // ---- Header ------------------------------------------------------------
-    if (read_header_line(f, path) != "ply")
-        throw std::runtime_error("PLY: missing magic in " + path);
+    if (header_line() != "ply")
+        throw std::runtime_error("PLY: missing magic in " + what_);
     bool binary = false;
     std::vector<PlyElement> elements;
     for (;;) {
-        std::string line = read_header_line(f, path);
-        auto tok = split_ws(line);
+        auto tok = split_ws(header_line());
         if (tok.empty()) continue;
         if (tok[0] == "comment" || tok[0] == "obj_info") continue;
         if (tok[0] == "format") {
@@ -156,103 +149,125 @@ ColmapPoints3D read_ply_points(const std::string& path) {
         }
     }
 
-    // ---- Slurp the data section once ----------------------------------------
-    // Per-row fgetc/fread through the stdio layer (worse still under
-    // Emscripten's virtual FS) made large ascii clouds take tens of seconds;
-    // reading the rest of the file into one buffer and pointer-walking it
-    // parses the same 60+ MB in well under a second.
-    long data_off = std::ftell(f);
-    std::fseek(f, 0, SEEK_END);
-    long fsize = std::ftell(f);
-    std::fseek(f, data_off, SEEK_SET);
-    std::string buf;
-    buf.resize((size_t)(fsize > data_off ? fsize - data_off : 0));
-    if (!buf.empty() && std::fread(&buf[0], 1, buf.size(), f) != buf.size())
-        throw std::runtime_error("PLY: cannot read " + path);
-    const char* p = buf.data();
-    const char* end = buf.data() + buf.size();
-
     // ---- Locate the vertex element ------------------------------------------
-    ColmapPoints3D pts;
+    const char* p = bytes_.data() + pos;
+    const char* end = bytes_.data() + bytes_.size();
     for (const auto& el : elements) {
         if (el.name != "vertex") {
             // Skip a preceding element; only possible with fixed-size props.
             if (el.has_list)
                 throw std::runtime_error(
-                    "PLY: list property before vertex element not supported in " + path);
+                    "PLY: list property before vertex element not supported in " + what_);
             if (binary) {
+                if ((int64_t)(end - p) < el.count * (int64_t)el.stride())
+                    throw std::runtime_error("PLY: truncated " + what_);
                 p += el.count * el.stride();
-                if (p > end) throw std::runtime_error("PLY: truncated " + path);
             } else {
                 for (int64_t i = 0; i < el.count; i++) {
                     const char* nl = (const char*)std::memchr(p, '\n', end - p);
-                    if (!nl) throw std::runtime_error("PLY: truncated " + path);
+                    if (!nl) throw std::runtime_error("PLY: truncated " + what_);
                     p = nl + 1;
                 }
             }
             continue;
         }
         if (el.has_list)
-            throw std::runtime_error("PLY: list property in vertex element of " + path);
-        int ix = el.find("x"), iy = el.find("y"), iz = el.find("z");
-        int ir = el.find("red"), ig = el.find("green"), ib = el.find("blue");
-        if (ix < 0 || iy < 0 || iz < 0)
-            throw std::runtime_error("PLY: vertex element missing x/y/z in " + path);
-        if (ir < 0 || ig < 0 || ib < 0)
-            throw std::runtime_error("PLY: vertex element missing red/green/blue in " + path);
-
-        const size_t nprops = el.props.size();
-        std::vector<size_t> offsets(nprops);
-        size_t off = 0;
-        for (size_t i = 0; i < nprops; i++) {
-            offsets[i] = off;
-            off += ply_type_size(el.props[i].type);
+            throw std::runtime_error("PLY: list property in vertex element of " + what_);
+        if (binary && (int64_t)(end - p) < el.count * (int64_t)el.stride())
+            throw std::runtime_error("PLY: truncated " + what_);
+        binary_ = binary;
+        count_ = el.count;
+        data_ = (size_t)(p - bytes_.data());
+        for (const PlyProp& prop : el.props) {
+            names_.push_back(prop.name);
+            types_.push_back((uint8_t)prop.type);
         }
-        const size_t stride = off;
-
-        // Colors stored as float/double are 0..1; integer types pass through.
-        auto to_u8 = [&](double v, PlyType t) -> uint8_t {
-            if (t == PlyType::F32 || t == PlyType::F64) v *= 255.0;
-            return (uint8_t)std::min(std::max(v, 0.0), 255.0);
-        };
-
-        pts.xyz.resize(el.count * 3);
-        pts.rgb.resize(el.count * 3);
-        if (binary) {
-            if ((int64_t)(end - p) < el.count * (int64_t)stride)
-                throw std::runtime_error("PLY: truncated " + path);
-            for (int64_t i = 0; i < el.count; i++) {
-                const uint8_t* row = (const uint8_t*)p + (size_t)i * stride;
-                pts.xyz[i*3 + 0] = ply_read_scalar(row + offsets[ix], el.props[ix].type);
-                pts.xyz[i*3 + 1] = ply_read_scalar(row + offsets[iy], el.props[iy].type);
-                pts.xyz[i*3 + 2] = ply_read_scalar(row + offsets[iz], el.props[iz].type);
-                pts.rgb[i*3 + 0] = to_u8(ply_read_scalar(row + offsets[ir], el.props[ir].type), el.props[ir].type);
-                pts.rgb[i*3 + 1] = to_u8(ply_read_scalar(row + offsets[ig], el.props[ig].type), el.props[ig].type);
-                pts.rgb[i*3 + 2] = to_u8(ply_read_scalar(row + offsets[ib], el.props[ib].type), el.props[ib].type);
-            }
-        } else {
-            // strtod-walk: no per-row line/token allocations. strtod skips
-            // leading whitespace (including newlines), so rows self-delimit.
-            std::vector<double> vals(nprops);
-            for (int64_t i = 0; i < el.count; i++) {
-                for (size_t k = 0; k < nprops; k++) {
-                    char* q;
-                    vals[k] = fast_strtod(p, &q);
-                    if (q == p)
-                        throw std::runtime_error("PLY: short ascii row in " + path);
-                    p = q;
-                }
-                pts.xyz[i*3 + 0] = vals[ix];
-                pts.xyz[i*3 + 1] = vals[iy];
-                pts.xyz[i*3 + 2] = vals[iz];
-                pts.rgb[i*3 + 0] = to_u8(vals[ir], el.props[ir].type);
-                pts.rgb[i*3 + 1] = to_u8(vals[ig], el.props[ig].type);
-                pts.rgb[i*3 + 2] = to_u8(vals[ib], el.props[ib].type);
-            }
-        }
-        return pts;
+        return;
     }
-    throw std::runtime_error("PLY: no vertex element in " + path);
+    throw std::runtime_error("PLY: no vertex element in " + what_);
+}
+
+int PlyVertexReader::column(const char* name) const {
+    for (size_t i = 0; i < names_.size(); i++)
+        if (names_[i] == name) return (int)i;
+    return -1;
+}
+
+bool PlyVertexReader::is_float(int column) const {
+    const PlyType t = (PlyType)types_.at(column);
+    return t == PlyType::F32 || t == PlyType::F64;
+}
+
+void PlyVertexReader::each(const std::vector<int>& cols,
+                           const std::function<void(const double*)>& row) const {
+    const size_t nprops = names_.size();
+    std::vector<size_t> offsets(nprops);
+    size_t stride = 0;
+    for (size_t i = 0; i < nprops; i++) {
+        offsets[i] = stride;
+        stride += ply_type_size((PlyType)types_[i]);
+    }
+    std::vector<double> v(cols.size());
+    const char* p = bytes_.data() + data_;
+    if (binary_) {
+        for (int64_t i = 0; i < count_; i++) {
+            const uint8_t* r = (const uint8_t*)p + (size_t)i * stride;
+            for (size_t k = 0; k < cols.size(); k++)
+                v[k] = ply_read_scalar(r + offsets[cols[k]], (PlyType)types_[cols[k]]);
+            row(v.data());
+        }
+        return;
+    }
+    // strtod-walk: no per-row line/token allocations. strtod skips leading
+    // whitespace (including newlines), so rows self-delimit.
+    std::vector<double> vals(nprops);
+    for (int64_t i = 0; i < count_; i++) {
+        for (size_t k = 0; k < nprops; k++) {
+            char* q;
+            vals[k] = fast_strtod(p, &q);
+            if (q == p) throw std::runtime_error("PLY: short ascii row in " + what_);
+            p = q;
+        }
+        for (size_t k = 0; k < cols.size(); k++) v[k] = vals[cols[k]];
+        row(v.data());
+    }
+}
+
+
+ColmapPoints3D read_ply_points(const std::string& path) {
+    // One read of the whole file: per-row stdio (worse still under
+    // Emscripten's virtual FS) made large ascii clouds take tens of seconds.
+    PlyVertexReader ply(spirula::read_file_bytes(path, "PLY"), path);
+
+    int ix = ply.column("x"), iy = ply.column("y"), iz = ply.column("z");
+    int ir = ply.column("red"), ig = ply.column("green"), ib = ply.column("blue");
+    if (ix < 0 || iy < 0 || iz < 0)
+        throw std::runtime_error("PLY: vertex element missing x/y/z in " + path);
+    if (ir < 0 || ig < 0 || ib < 0)
+        throw std::runtime_error("PLY: vertex element missing red/green/blue in " + path);
+
+    // Colors stored as float/double are 0..1; integer types pass through.
+    const double rgb_scale[3] = {ply.is_float(ir) ? 255.0 : 1.0,
+                                 ply.is_float(ig) ? 255.0 : 1.0,
+                                 ply.is_float(ib) ? 255.0 : 1.0};
+    ColmapPoints3D pts;
+    try {
+        pts.xyz.resize(ply.count() * 3);
+        pts.rgb.resize(ply.count() * 3);
+    } catch (const std::bad_alloc&) {
+        throw spirula::file_out_of_memory(
+            path, (std::uintmax_t)ply.count() * 3 * (sizeof(double) + sizeof(uint8_t)));
+    }
+    int64_t i = 0;
+    ply.each({ix, iy, iz, ir, ig, ib}, [&](const double* v) {
+        for (int k = 0; k < 3; k++) {
+            pts.xyz[i*3 + k] = v[k];
+            pts.rgb[i*3 + k] =
+                (uint8_t)std::min(std::max(v[3 + k] * rgb_scale[k], 0.0), 255.0);
+        }
+        i++;
+    });
+    return pts;
 }
 
 
@@ -404,6 +419,7 @@ ParsedDataset parse_nerfstudio_dataset(const std::string& dataset_dir,
                                  " does not exist");
     JsonValue meta = json_parse_file(transforms_path.string());
     ParsedDataset ds = parse_nerfstudio_meta(meta, dataset_dir, cfg);
+    dsparse::read_gauge(dataset_dir, ds);
     std::error_code ec;
     ds.edited_in_place = fs::exists(transforms_path.string() + ".orig", ec);
     return ds;
@@ -414,7 +430,8 @@ ParsedDataset parse_nerfstudio_dataset(const std::string& dataset_dir,
 // _parser_metashape_data -> _parse_nerfstudio_data(transforms[0]).
 ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
                                     const std::string& dataset_dir,
-                                    const DatasetParserConfig& cfg) {
+                                    const DatasetParserConfig& cfg,
+                                    const ColmapPoints3D* given_points) {
     fs::path root(dataset_dir);
     const JsonValue* jframes = meta.find("frames");
     if (!jframes || !jframes->is_array() || jframes->arr.empty())
@@ -485,7 +502,11 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
 
     // ---- Seed points ------------------------------------------------------
     ColmapPoints3D points;
-    {
+    if (!cfg.seed_pointcloud.empty()) {
+        points = dsparse::read_seed_pointcloud(dataset_dir, cfg.seed_pointcloud);
+    } else if (given_points) {
+        points = *given_points;
+    } else {
         std::string ply_rel;
         if (const JsonValue* v = meta.find("ply_file_path")) ply_rel = v->as_string();
         else {
@@ -498,9 +519,7 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
             points = read_ply_points((root / ply_rel).string());
     }
 
-    // ---- applied_transform inverse (train_frame="points" branch): poses and
-    // points go back to the ORIGINAL (pre-applied_transform) frame, which is
-    // where the centre is taken. -------------------------------------------
+    // Scene centering is measured in the frame before applied_transform.
     double A[3][3] = {{1,0,0},{0,1,0},{0,0,1}}, b[3] = {0, 0, 0};
     bool applied = false;
     if (const JsonValue* at = meta.find("applied_transform")) {
@@ -541,9 +560,8 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
     // ---- Centering, over ALL post-outlier frames and every point, still in
     // double. The same shift is A @ center + b in the transforms.json frame,
     // after which the map between the two frames is A alone. ----------------
-    const dsparse::CenterMode center_mode = dsparse::center_mode_from_name(cfg.center_mode);
-    const std::array<double, 3> center = dsparse::scene_center(
-        center_mode, c2w_world.data(), n_all, points.xyz.data(), points.num());
+    const auto [center_mode, center] =
+        dsparse::parse_center(cfg, c2w_world.data(), n_all, points);
     double center_json[3];
     for (int r = 0; r < 3; r++)
         center_json[r] = A[r][0]*center[0] + A[r][1]*center[1] + A[r][2]*center[2] + b[r];
@@ -566,10 +584,28 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
     const bool exif_level = cfg.exif_orientation == "orient" && !exif_o.empty();
     const bool exif_turn = cfg.exif_orientation == "apply" && !exif_o.empty();
 
+    // gsplat's normalization reads the seed points, which are in the world
+    // frame while c2w_all is in the file's: p_file = A p_world once the centre
+    // is off (the translation b went with it above).
+    const bool wants_points =
+        cfg.orientation_method == "gsplat" || cfg.center_method == "gsplat";
+    std::vector<double> points_file;
+    if (wants_points) {
+        points_file.resize((size_t)points.num() * 3);
+        for (int64_t i = 0; i < points.num(); i++) {
+            const double* p = &points.xyz[i*3];
+            for (int r = 0; r < 3; r++)
+                points_file[i*3 + r] = A[r][0]*p[0] + A[r][1]*p[1] + A[r][2]*p[2];
+        }
+    }
+
     double T_n_from_camera[16], R_align[9];
+    bool gsplat_fell_back = false;
     double scale_factor = dsparse::compute_normalized_transform(
         c2w_all.data(), n_all, T_n_from_camera, R_align,
-        exif_level ? exif_o.data() : nullptr);
+        exif_level ? exif_o.data() : nullptr,
+        cfg.orientation_method, cfg.center_method, cfg.auto_scale_poses,
+        points_file.data(), points.num(), &gsplat_fell_back);
     // train_to_normalized = inv(T_n_from_camera @ [A | 0])
     double T_n_from_train[16];
     for (int r = 0; r < 4; r++)
@@ -590,7 +626,12 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
     const int64_t N = (int64_t)subset.size();
     ds.num_cameras = N;
     ds.train_frame_scale = (float)(scale_factor != 0.0 ? 1.0 / scale_factor : 1.0);
+    ds.pose_normalization_fell_back = gsplat_fell_back;
     ds.center = center;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) ds.raw_to_file[r * 4 + c] = A[r][c];
+        ds.raw_to_file[r * 4 + 3] = b[r];
+    }
     ds.center_mode = dsparse::kCenterModeNames[(int)center_mode];
     ds.points = std::move(points);
     ds.c2w.resize(N * 12);
@@ -602,7 +643,25 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
     ds.widths.reserve(N);
     ds.heights.reserve(N);
 
-    std::vector<std::string> mask_files(N), depth_files(N), normal_files(N);
+    // The per-image file lookups first, in parallel. A frame naming its own
+    // auxiliary file gets "" here, which find_aux_files skips.
+    std::vector<std::string> paths_n(N), mask_rel(N), depth_rel(N), normal_rel(N);
+    for (int64_t j = 0; j < N; j++) {
+        const Frame& F = frames[subset[j]];
+        paths_n[j] = F.abs;
+        std::string rel = dsparse::relative_under(F.abs, (root / cfg.image_dir).string());
+        if (rel.empty()) rel = dsparse::relative_under(F.abs, root.string());
+        if (!F.j->find("mask_path")) mask_rel[j] = rel;
+        if (!F.j->find("depth_file_path")) depth_rel[j] = rel;
+        if (!F.j->find("normal_file_path")) normal_rel[j] = rel;
+    }
+    const std::vector<dsparse::ImageSize> sizes = dsparse::probe_image_sizes(cfg, paths_n);
+    std::vector<std::string> mask_files =
+        dsparse::find_aux_files((root / cfg.mask_dir).string(), mask_rel, "mask");
+    std::vector<std::string> depth_files =
+        dsparse::find_aux_files((root / cfg.depth_dir).string(), depth_rel, "depth");
+    std::vector<std::string> normal_files =
+        dsparse::find_aux_files((root / cfg.normal_dir).string(), normal_rel, "normal");
     bool any_mask = false, any_depth = false, any_normal = false;
     const int EQUIRECT_V = (int)camera_model_from_name("EQUIRECTANGULAR");
     const int PINHOLE_V  = (int)camera_model_from_name("PINHOLE");
@@ -724,7 +783,7 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
             ds.exif_quarter_turns[j] = (uint8_t)turns;
         }
         dsparse::fit_camera_resolution(
-            cfg, F.abs, W, H, fx, fy, cx, cy,
+            cfg, F.abs, sizes[j], W, H, fx, fy, cx, cy,
             ds.redistort.empty() ? nullptr : &ds.redistort[j], turns);
 
         // Equirectangular: canonical panorama intrinsics.
@@ -744,27 +803,14 @@ ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
         ds.intrins[j*4 + 3] = (float)cy;
         for (int k = 0; k < 12; k++) ds.c2w[j*12 + k] = (float)c2w_world[subset[j]*12 + k];
 
-        // Auxiliary buffers: explicit frame paths win; directory-convention
-        // probing as fallback (_add_auxiliary_buffers). Unlike the Python
-        // parser (which requires all-or-none), per-image absence is allowed
-        // -- the C++ DataManager's convention ("" = none for this image).
-        std::string rel = dsparse::relative_under(F.abs, (root / cfg.image_dir).string());
-        if (rel.empty()) rel = dsparse::relative_under(F.abs, root.string());
+        // Explicit frame paths win over the convention found above. Unlike the
+        // Python parser's all-or-none, per-image absence is allowed ("" = none).
         if (const JsonValue* v = fr.find("mask_path"))
             mask_files[j] = (root / v->as_string()).lexically_normal().string();
-        else
-            mask_files[j] = dsparse::find_aux_file(
-                (root / cfg.mask_dir).string(), rel, "mask");
         if (const JsonValue* v = fr.find("depth_file_path"))
             depth_files[j] = (root / v->as_string()).lexically_normal().string();
-        else
-            depth_files[j] = dsparse::find_aux_file(
-                (root / cfg.depth_dir).string(), rel, "depth");
         if (const JsonValue* v = fr.find("normal_file_path"))
             normal_files[j] = (root / v->as_string()).lexically_normal().string();
-        else
-            normal_files[j] = dsparse::find_aux_file(
-                (root / cfg.normal_dir).string(), rel, "normal");
         any_mask   |= !mask_files[j].empty();
         any_depth  |= !depth_files[j].empty();
         any_normal |= !normal_files[j].empty();

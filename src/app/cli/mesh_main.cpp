@@ -12,6 +12,7 @@
 // dataset with the same C++ parsers the CLI trainer uses, and calls
 // meshing::generate_mesh (Meshing.h) for the heavy lifting.
 
+#include "app/RunReport.h"
 #include "app/Tools.h"
 
 #include "backend/api/BackendRuntime.h"
@@ -21,6 +22,7 @@
 #include "data/DatasetParser.h"
 #include "data/ImageProbe.h"
 #include "data/Json.h"
+#include "data/SceneTransform.h"
 #include "i18n/catalog/Cli.h"
 #include "mesh/MeshLog.h"
 
@@ -62,7 +64,8 @@ struct MeshCameras {
     int64_t num() const { return (int64_t)widths.size(); }
 };
 
-MeshCameras load_cameras(const JsonValue& run_cfg, const std::string& data_dir,
+MeshCameras load_cameras(const JsonValue& run_cfg, const fs::path& run_dir,
+                         const std::string& data_dir,
                          const std::string& data_format_override) {
     DatasetParserConfig pcfg;
     std::string data_format = data_format_override;
@@ -78,12 +81,29 @@ MeshCameras load_cameras(const JsonValue& run_cfg, const std::string& data_dir,
     pcfg.metashape_ply = dp_str("metashape_ply", "");
     pcfg.metashape_psx = dp_str("metashape_psx", "");
     pcfg.downscale_rounding_mode = dp_str("downscale_rounding_mode", "floor");
-    pcfg.center_mode = dp_str("scene_center", "none");
+    // The run's own centre: measuring again would see neither its seed cloud
+    // nor its outlier-free cameras, and lands elsewhere.
+    std::array<double, 3> center;
+    std::string center_mode;
+    if (!run_dir.empty() &&
+        spirula::read_scene_centering_json((run_dir / "scene_transform.json").string(),
+                                           center_mode, center.data())) {
+        pcfg.center_mode = center_mode;
+        pcfg.center = center;
+    } else {
+        pcfg.center_mode = dp_str("scene_center", "none");
+    }
     pcfg.probe_image_size = probe_image_size;
     {
         const JsonValue* v = run_cfg.find("train_resolution_divisor");
         if (v && v->type == JsonValue::Type::Number)
             pcfg.train_resolution_divisor = (float)v->as_double(0.0);
+        const JsonValue* cap = run_cfg.find("max_resolution");
+        if (cap && cap->type == JsonValue::Type::Number)
+            pcfg.max_resolution = (int)cap->as_double(0.0);
+        const JsonValue* t = run_cfg.find("scene_center_threshold");
+        if (t && t->type == JsonValue::Type::Number)
+            pcfg.center_auto_threshold = (float)t->as_double(20.0);
         const JsonValue* fmt = run_cfg.find("data_format");
         if (data_format.empty() && fmt && !fmt->is_null()) data_format = fmt->as_string();
     }
@@ -144,6 +164,7 @@ struct Options {
     // Canonical selector passed by GUI children; empty uses shared precedence.
     std::string device;
     std::optional<float> iso;           // default depends on cameras
+    std::string progress_dir;           // app/RunReport.h, for the GUI
     meshing::MeshingConfig m;           // remaining knobs live here
 };
 
@@ -226,6 +247,7 @@ void print_help(const char* argv0) {
              {(double)d.m.degenerate_angle_deg});
     help_row("--quality-iters <n>", mmsg::help_quality_iters,
              {d.m.quality_iters});
+    help_row("--progress-dir <dir>", mmsg::help_progress_dir);
     help_row("--quiet", mmsg::help_quiet);
 }
 
@@ -286,6 +308,7 @@ Options parse_args(int argc, char** argv) {
         else if (key == "fill_hole_max_edges") o.m.fill_hole_max_edges = parse_i(key, next());
         else if (key == "degenerate_angle_deg") o.m.degenerate_angle_deg = parse_f(key, next());
         else if (key == "quality_iters")   o.m.quality_iters = parse_i(key, next());
+        else if (key == "progress_dir")    o.progress_dir = next();
         else if (key == "quiet")           o.m.verbose = false;
         else throw std::runtime_error("unknown flag: --" + key + " (see --help)");
     }
@@ -300,6 +323,20 @@ Options parse_args(int argc, char** argv) {
 int spirula_mesh_main(int argc, char** argv) {
     try {
         Options o = parse_args(argc, argv);
+        spirula::RunReporter report(o.progress_dir, [](spirula::RunReporter::Device& d) {
+            const backend::MemoryUsage m = backend::memory_usage();
+            if (!m.has_process || !m.has_total) return false;
+            d.ours = m.process_bytes;
+            d.capacity = m.total_bytes;
+            d.others = m.has_used && m.used_bytes > m.process_bytes ? m.used_bytes - m.process_bytes : 0;
+            return true;
+        });
+        if (!o.progress_dir.empty())
+            o.m.on_progress = [&report](const meshing::MeshProgressReport& r) {
+                report.work(r.work);
+                report.host_peak({r.host_peak, r.host_sigma});
+                report.device_peak({r.device_peak, r.device_sigma});
+            };
 
         // The identity API is Vulkan-only; a CUDA child receives its ordinal.
 #ifdef SS_BACKEND_VULKAN
@@ -387,7 +424,7 @@ int spirula_mesh_main(int argc, char** argv) {
             if (!data_dir.empty() && fs::exists(data_dir)) {
                 mlog::out(mlog::Stage::Loading, mmsg::reading_cameras,
                           {data_dir});
-                cams = load_cameras(run_cfg, data_dir, o.data_format);
+                cams = load_cameras(run_cfg, run_dir, data_dir, o.data_format);
                 mlog::out(mlog::Stage::Loading, mmsg::cameras_loaded,
                           {(long long)cams.num(), cams.widths[0],
                            cams.heights[0], cams.model});

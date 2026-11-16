@@ -10,6 +10,7 @@
 //   spirula-sam segment ... 2>/dev/null > detections.tsv
 
 #include "app/Tools.h"
+#include "app/cli/ModelLicense.h"
 #include "i18n/catalog/Cli.h"
 #include "i18n/catalog/SamHelp.h"
 #include "app/FrameLook.h"
@@ -21,6 +22,7 @@
 #include "nn/io/Image.h"
 #include "birefnet/BiRefNet.h"
 #include "sam/Masking.h"
+#include "app/MaskWorker.h"
 #include "sam/Sam.h"
 #ifdef SS_HAVE_VIDEO
 #include "video/Video.h"
@@ -109,6 +111,7 @@ void usage() {
                  "--point 700,300\n"
                  "                                --object --point 120,500\n");
     help_row("", H::trk_at_frame_example);
+    help_row("--mask-mode <m>", H::trk_mask_mode);
     help_row("--detect-every <n>", H::trk_detect_every);
     help_row("--memory-frames <n>", H::trk_memory_frames);
     help_row("--max-frames <n>", H::trk_max_frames);
@@ -155,6 +158,7 @@ void usage() {
     help_row("--max-size <n>", H::common_max_size);
     help_row("--image-gamut <name>", H::common_image_gamut);
     help_row("--image-linear / --no-image-linear", H::common_image_linear);
+    help_row("--image-exposure auto|<stops>", H::common_image_exposure);
     std::fprintf(stderr,
                  "%s SS_NN_LOG=0..3  SS_VK_DEVICE  SS_PROFILE=1\n"
                  "             SS_VK_VALIDATION=1  SS_NN_DEBUG_SYNC=1\n",
@@ -199,10 +203,12 @@ struct Options {
     int max_frames = 0;
     int img_size = 0;
     int detect_every = 1, memory_frames = 0, max_size = 1600;
+    std::string mask_mode = "video";
 
     // The frames' colour space; they convert to sRGB before the model sees them.
     std::string image_gamut;
-    std::optional<bool> image_is_linear;   // unset: an EXR's own header decides
+    std::optional<bool> image_is_linear;   // unset: the file's own declaration
+    colorspace::Exposure image_exposure;
 
     // `mask`
     std::string shape_spec, mask_image, preview;
@@ -242,10 +248,13 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--image-gamut") o.image_gamut = next("--image-gamut");
         else if (a == "--image-linear") o.image_is_linear = true;
         else if (a == "--no-image-linear") o.image_is_linear = false;
+        else if (a == "--image-exposure" &&
+                 colorspace::parse_exposure(next("--image-exposure"), o.image_exposure)) {}
         else if (a == "--frames") o.frames = next("--frames");
         else if (a == "--out") o.out_dir = next("--out");
         else if (a == "--text") o.text = next("--text");
         else if (a == "--neg-text") o.neg_text = next("--neg-text");
+        else if (a == "--mask-mode") o.mask_mode = next("--mask-mode");
         else if (a == "--detect-every") o.detect_every = std::atoi(next("--detect-every"));
         else if (a == "--memory-frames") o.memory_frames = std::atoi(next("--memory-frames"));
         else if (a == "--max-size") o.max_size = std::atoi(next("--max-size"));
@@ -394,6 +403,7 @@ sam::MaskOptions mask_options(const Options& o) {
     mo.threshold = o.threshold;
     mo.nms = o.nms;
     mo.dilate_ratio = o.dilate_ratio;
+    mo.video = o.mask_mode != "image";
     mo.detect_every = o.detect_every;
     mo.memory_frames = o.memory_frames;
     mo.max_size = o.max_size;
@@ -407,7 +417,8 @@ sam::MaskOptions mask_options(const Options& o) {
 // `segment` through the mask policy: the path for a model that is not a SAM
 // session on its own -- BiRefNet, or SAM 2 with Grounding DINO finding boxes.
 int segment_with_masker(const Options& o) {
-    nn::Image image = nn::load_image(o.image, o.image_gamut, o.image_is_linear);
+    nn::Image image =
+        nn::load_image(o.image, o.image_gamut, o.image_is_linear, o.image_exposure);
     if (image.empty()) return 1;
     sam::MaskOptions mo = mask_options(o);
     mo.video = false;
@@ -449,13 +460,15 @@ int cmd_segment(const Options& o) {
         std::fprintf(stderr, "%s\n", cmsg::sam_segment_needs.get());
         return 2;
     }
+    if (!app::require_model_license(o.model)) return 2;
     if (!o.detector.empty() || birefnet::find_model_source(o.model) ||
         birefnet::is_checkpoint(o.model))
         return segment_with_masker(o);
     sam::Session session;
     if (!load_session(o, session)) return 1;
 
-    nn::Image image = nn::load_image(o.image, o.image_gamut, o.image_is_linear);
+    nn::Image image =
+        nn::load_image(o.image, o.image_gamut, o.image_is_linear, o.image_exposure);
     if (image.empty()) return 1;
     if (!session.encodeImage(image)) {
         std::fprintf(stderr, "%s\n",
@@ -498,6 +511,7 @@ int cmd_track(const Options& o) {
         std::fprintf(stderr, "%s\n", cmsg::sam_track_needs.get());
         return 2;
     }
+    if (!app::require_model_license(o.model)) return 2;
     std::vector<std::string> files;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(o.frames, ec)) {
@@ -505,7 +519,7 @@ int cmd_track(const Options& o) {
         std::string ext = e.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
-            ext == ".exr")
+            ext == ".exr" || ext == ".tif" || ext == ".tiff")
             files.push_back(e.path().string());
     }
     std::sort(files.begin(), files.end());
@@ -542,9 +556,10 @@ int cmd_track(const Options& o) {
     std::future<Loaded> ahead;
     auto load_at = [&](size_t i) {
         return std::async(std::launch::async,
-                          [p = files[i], g = o.image_gamut, l = o.image_is_linear] {
+                          [p = files[i], g = o.image_gamut, l = o.image_is_linear,
+                           e = o.image_exposure] {
                               Loaded out;
-                              out.img = app::load_upright(p, g, l, out.turn);
+                              out.img = app::load_upright(p, g, l, e, out.turn);
                               return out;
                           });
     };
@@ -631,8 +646,8 @@ int cmd_track(const Options& o) {
 
 void write_preview(const std::string& frame, const app::FrameMask& fm,
                    const std::string& path, const std::string& gamut,
-                   std::optional<bool> is_linear) {
-    nn::Image img = nn::load_image(frame, gamut, is_linear);
+                   std::optional<bool> is_linear, const colorspace::Exposure& exposure) {
+    nn::Image img = nn::load_image(frame, gamut, is_linear, exposure);
     if (img.empty()) return;
     std::vector<uint8_t> px;
     std::string err;
@@ -669,7 +684,7 @@ int cmd_mask(const Options& o) {
     run.image_dir = o.frames;
     run.mask_dir = o.out_dir.empty() ? (root.parent_path() / "masks").string()
                                      : o.out_dir;
-    run.skip_dir = run.mask_dir;
+    run.skip_dirs = {run.mask_dir};
     run.replace = o.replace;
     run.dry_run = o.print_only;
     run.detect = o.border;
@@ -720,11 +735,11 @@ int cmd_mask(const Options& o) {
             return;
         }
         if (!preview_left.empty() && !fm.empty()) {
-            const auto groups = app::group_frames_by_camera(run.image_dir, run.skip_dir);
+            const auto groups = app::group_frames_by_camera(run.image_dir, run.skip_dirs);
             const auto it = groups.find(rel);
             if (it != groups.end() && !it->second.empty())
                 write_preview(it->second.front(), fm, preview_left,
-                              o.image_gamut, o.image_is_linear);
+                              o.image_gamut, o.image_is_linear, o.image_exposure);
             preview_left.clear();
         }
     };
@@ -816,6 +831,11 @@ int sam_cli_extract(int argc, char** argv);
 
 int spirula_sam_main(int argc, char** argv) {
     app::set_program_name(argc > 0 ? argv[0] : nullptr, "spirula sam");
+    if (argc == 3 && std::strcmp(argv[1], "--mask-worker") == 0) {
+        const int rc = app::mask_worker_main(argv[2]);
+        nn::shutdown();
+        return rc;
+    }
     if (argc >= 2 &&
         (std::strcmp(argv[1], "--help") == 0 ||
          std::strcmp(argv[1], "-h") == 0)) {

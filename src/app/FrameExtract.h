@@ -11,21 +11,23 @@
 // written every `skip` -- and files are named by source frame index whichever
 // decoder ran.
 
+#include "app/FrameClip.h"
 #include "app/FrameLook.h"
 #include "app/FrameGps.h"
+#include "app/FramePick.h"
 #include "app/FrameMotion.h"
 #include "nn/io/Image.h"
 #include "sam/Masking.h"
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace app {
 
-// Auto takes the in-process decoder when the build and the device have one,
-// and ffmpeg otherwise.
+// Auto uses native decoding when startup succeeds, otherwise software ffmpeg.
 enum class FrameDecoder { Auto, Builtin, Ffmpeg };
 
 // What every frame goes through is the base class, so a preview can be handed
@@ -42,6 +44,11 @@ struct FrameExtractJob : FrameLook {
 
     FrameDecoder decoder = FrameDecoder::Auto;
     std::string ffmpeg_exe = "ffmpeg";
+
+    // The part of the video read, in seconds of it; `clip_end` 0 is its end.
+    // Frames keep their source index as their name, so a clip's frames meet
+    // the capture's IMU and GPS where the whole video's would.
+    double clip_start = 0.0, clip_end = 0.0;
 
     // Selection
     int   skip = 1;                // write one frame every n source frames
@@ -61,6 +68,15 @@ struct FrameExtractJob : FrameLook {
     float adaptive_range = 4.0f;
     // 0 disables metadata spacing; otherwise GPS path length decides intervals.
     double gps_spacing_m = 0;
+    // Which chosen frames are left out after all (app/FramePick.h, PickRule):
+    // blurred across more than `blur_reject` pixels, or too like the last one
+    // kept. 0 = off.
+    float blur_reject = 0.0f;
+    bool  blur_neighbour = true;
+    int   similar_bits = 0;
+    // Where a frame left out is written, as it would have been to image_dir,
+    // so it can still be looked at. Empty writes none. One track, no 360.
+    std::string skipped_dir;
     // The spacing to keep, when the caller has already worked it out: several
     // videos on one rate share a budget, and that plan cannot be made from one
     // of them. Empty lets the run measure and plan its own.
@@ -75,11 +91,16 @@ struct FrameExtractJob : FrameLook {
     bool  write_overlay = false;   // debug overlays next to the masks
 };
 
+inline FrameSpan clip_frames(const FrameExtractJob& o, double fps) {
+    return clip_frames(o.clip_start, o.clip_end, fps);
+}
+
 struct FrameExtractStats {
     double decode = 0, sharpness = 0, convert = 0, mask = 0, submit = 0;
     double drain = 0, total = 0, encode_cpu = 0;
     double plan = 0;                 // the adaptive pass, decode included
     int64_t decoded = 0, measured = 0, written = 0, analyzed = 0;
+    int64_t blurry = 0, similar = 0; // chosen frames PickRule left out
     int    tracks = 1;
     int    encoder_threads = 0;
     int    write_failures = 0;
@@ -100,11 +121,12 @@ struct FrameExtractSinks {
     // frame it ends at, how many the capture holds, and the view change across
     // it.
     std::function<void(int64_t, int64_t, float)> measured;
-    // A frame worth showing, RGB8 tightly packed, on the extraction thread with
-    // the picture still on the host, and the file it is about to be written to
-    // (which the writer pool has not reached yet). Copy what you need and
-    // return -- the decoder does not wait, and a caller that cannot keep up
-    // should decline frames rather than slow it down.
+    // Each chosen frame as PickRule rules on it, kept or not, with its first
+    // track's pixels as extraction would write them.
+    std::function<void(const FramePick&, const nn::Image&)> judged;
+    // Every image about to be written (each lens, each 360 view), RGB8 with its
+    // file, on the extraction thread. Copy what you need and return, or decline
+    // the pixels: the decoder does not wait.
     std::function<void(const uint8_t* rgb, int w, int h,
                        const std::string& path)> preview;
     // Polled between frames; set it to stop early. Frames already written stay.
@@ -172,5 +194,33 @@ bool extract_one_frame(const std::string& input, const FrameLook& look,
                        int64_t index, int folder, nn::Image& out,
                        const std::atomic<bool>* cancel, std::string& error,
                        const std::string& device = {});
+
+// A video held open for a player: every track decoded in step, so the next
+// frame costs a decode per track rather than extract_one_frame's open and
+// seek. One owner; it holds decoder memory on the device until close().
+class FrameCursor {
+public:
+    FrameCursor();
+    ~FrameCursor();
+    FrameCursor(const FrameCursor&) = delete;
+    FrameCursor& operator=(const FrameCursor&) = delete;
+
+    bool open(const std::string& input, std::string& error,
+              const std::string& device = {});
+    void close();
+    bool is_open() const;
+    int tracks() const;
+    // Every track brought to `index`. With `exact` false it settles for the
+    // sync sample at or before it: one decode, for a thumbnail.
+    bool go(int64_t index, bool exact, const std::atomic<bool>* cancel,
+            std::string& error);
+    int64_t index() const;   // where go() landed; -1 before it has
+    // That instant as extract_frames_at writes `folder` of `look`.
+    bool image(const FrameLook& look, int folder, nn::Image& out, std::string& error);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> _impl;
+};
 
 }  // namespace app

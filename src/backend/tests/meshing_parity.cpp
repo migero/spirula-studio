@@ -134,8 +134,8 @@ int main(int argc, char** argv) {
     std::vector<float> means(3 * N), quats(4 * N), logsc(3 * N), logit(N),
         fdc(3 * N);
     for (int i = 0; i < N; ++i) {
-        float far = (i % 97 == 0) ? 40.0f : 1.0f;   // occasional outlier
-        for (int a = 0; a < 3; ++a) means[3 * i + a] = uf(-1.f, 1.f) * far;
+        float spread = (i % 97 == 0) ? 40.0f : 1.0f;   // occasional outlier
+        for (int a = 0; a < 3; ++a) means[3 * i + a] = uf(-1.f, 1.f) * spread;
         for (int a = 0; a < 4; ++a) quats[4 * i + a] = uf(-1.f, 1.f);
         for (int a = 0; a < 3; ++a) logsc[3 * i + a] = uf(-3.5f, -1.5f);
         // straddle the keep threshold both ways
@@ -439,7 +439,7 @@ int main(int argc, char** argv) {
         const int cam = 0;
         backend::memset_sync(d_radii, 0, N * sizeof(float));
         auto [aabb_2d, depths_2d, splats_s] = projection_3dgut_forward(
-            (int64_t)N, 0, in_splats, ttv(d_vm + 16 * cam, {1, 4, 4}),
+            (int64_t)N, ColorBasis{}, in_splats, ttv(d_vm + 16 * cam, {1, 4, 4}),
             ttv(d_intr + 4 * cam, {1, 4}), W, H, "PINHOLE", "THIN_PRISM",
             ttv(d_dist + dist_fixture::row_offset(2, NCAM, cam),
                 {1, kCameraDistortionParams}),
@@ -477,6 +477,64 @@ int main(int argc, char** argv) {
         backend::device_synchronize();
         if (check_error()) return 1;
         readback(lacc, (const float*)d_rgbimg, (int64_t)npix * 3);
+    }
+
+    // Equirectangular rays exercise the longitude seam at the back of the
+    // camera. The moment rasterizer must keep this projection path in parity.
+    {
+        constexpr uint32_t equi_W = W;
+        constexpr uint32_t equi_H = W / 2;
+        const size_t equi_npix = (size_t)equi_W * equi_H;
+        std::vector<float> equi_vm(16, 0.0f);
+        equi_vm[0] = equi_vm[5] = equi_vm[10] = equi_vm[15] = 1.0f;
+        equi_vm[11] = -4.0f;
+        std::vector<float> equi_intr = {
+            (float)equi_W / 6.28318530717958648f,
+            (float)equi_H / 3.14159265358979324f,
+            0.5f * (float)equi_W,
+            0.5f * (float)equi_H,
+        };
+        float* d_equi_vm = upload(equi_vm);
+        float* d_equi_intr = upload(equi_intr);
+
+        backend::memset_sync(d_radii, 0, N * sizeof(float));
+        auto [aabb_2d, depths_2d, splats_s] = projection_3dgut_forward(
+            (int64_t)N, ColorBasis{}, in_splats, ttv(d_equi_vm, {1, 4, 4}),
+            ttv(d_equi_intr, {1, 4}), equi_W, equi_H, "EQUIRECTANGULAR", "NONE",
+            ttv(d_dist, {1, kCameraDistortionParams}),
+            radii, std::nullopt, std::nullopt, 0, 32, 0);
+        DeviceTensorFloatND depths_nd(depths_2d);
+        int macro_log2 = kMacroLog2Default;
+        auto [isect_ids, flatten_ids, tile_offsets] = do_intersect_tile_generic(
+            aabb_2d, depths_nd, ellipse_view(splats_s, true), 1,
+            ttv(d_equi_intr, {1, 4}), equi_W, equi_H, nullptr, /*tile_active=*/nullptr,
+            macro_log2);
+        backend::device_synchronize();
+        if (check_error()) return 1;
+
+        rasterize_moments_3dgut_fwd(
+            (int64_t)N, in_splats, splats_s, DeviceVector<int32_t>(),
+            ttv(d_equi_vm, {1, 4, 4}), ttv(d_equi_intr, {1, 4}),
+            "EQUIRECTANGULAR", "NONE",
+            ttv(d_dist, {1, kCameraDistortionParams}),
+            aabb_2d, equi_W, equi_H, tile_offsets, flatten_ids, macro_log2,
+            d_moments, nullptr);
+        backend::device_synchronize();
+        if (check_error()) return 1;
+
+        std::vector<float> h_moments(equi_npix * 3);
+        backend::memcpy_sync(h_moments.data(), d_moments, h_moments.size() * sizeof(float),
+                             MemcpyKind::DeviceToHost);
+        float coverage = 0.0f;
+        for (size_t i = 0; i < equi_npix; ++i) coverage += h_moments[3 * i];
+        if (!(coverage > 0.0f)) {
+            std::fprintf(stderr, "meshing_parity: empty equirectangular render\n");
+            return 1;
+        }
+        lacc.insert(lacc.end(), h_moments.begin(), h_moments.end());
+
+        backend::device_free(d_equi_vm);
+        backend::device_free(d_equi_intr);
     }
 
     // === 5. Samplers over a SYNTHETIC moments image ===

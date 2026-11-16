@@ -29,6 +29,7 @@
 function(ss_configure_app target)
     target_include_directories(${target} PRIVATE
         ${SS_SRC}
+        ${SS_SRC}/external/apriltag
         ${CMAKE_BINARY_DIR}      # app_generated/*.h
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -48,6 +49,27 @@ function(ss_configure_app target)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# ss_dense -- the dense point cloud's host core (src/dense/), for every app and
+# test. Kept out of the engine library: it builds on sfm/'s header-only
+# geometry and roma/'s option types, which the trainer must not reach.
+# ---------------------------------------------------------------------------
+file(GLOB SS_DENSE_SOURCES CONFIGURE_DEPENDS ${SS_SRC}/dense/*.cpp)
+add_library(ss_dense STATIC ${SS_DENSE_SOURCES})
+target_include_directories(ss_dense PRIVATE ${SS_SRC} ${CMAKE_BINARY_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+target_link_libraries(ss_dense PUBLIC ${SS_APP_LIBS})
+target_compile_options(ss_dense PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FLAGS}>)
+set_property(TARGET ss_dense PROPERTY CXX_STANDARD 17)
+set(SS_APP_LIBS ss_dense ${SS_APP_LIBS})
+
+add_library(ss_inference_worker STATIC
+    ${SS_SRC}/app/InferenceWorker.cpp
+    ${SS_SRC}/app/gui/Subprocess.cpp)
+target_include_directories(ss_inference_worker PRIVATE ${SS_SRC})
+target_link_libraries(ss_inference_worker PUBLIC Threads::Threads)
+set_property(TARGET ss_inference_worker PROPERTY CXX_STANDARD 17)
+set(SS_APP_LIBS ss_inference_worker ${SS_APP_LIBS})
+
+# ---------------------------------------------------------------------------
 # Which tools this build has
 #
 # Each block appends the tool's sources, the macro that declares its entry
@@ -63,6 +85,8 @@ set(SS_TOOL_LIBS "")
 # src/app/Main.cpp needs to arm the crash handler for every subcommand --
 # including the ones the GUI spawns.
 list(APPEND SS_TOOL_SOURCES
+     ${SS_SRC}/app/CubeLut.cpp
+     ${SS_SRC}/app/LogLuts.cpp
      ${SS_SRC}/app/FrameMask.cpp
      ${SS_SRC}/app/FrameMaskSvg.cpp
      ${SS_SRC}/app/FrameLook.cpp
@@ -98,12 +122,29 @@ list(APPEND SS_TOOL_DEFS SS_TOOL_TRAIN=1)
 # Host-only over the parsers and the splat PLY reader, so every build has it.
 list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/partition_main.cpp)
 list(APPEND SS_TOOL_DEFS SS_TOOL_PARTITION=1)
+list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/dense_main.cpp)
+list(APPEND SS_TOOL_DEFS SS_TOOL_DENSE=1)
 
 # ---- mesh extraction ----
 # Both backends: the host side is portable (mesh/OccupancyEvaluator.cpp) and
 # each has kernels (mesh/Meshing.cu, backend/vulkan/kernels/Meshing.cpp).
 list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/mesh_main.cpp)
 list(APPEND SS_TOOL_DEFS SS_TOOL_MESH=1)
+
+# ---- a dataset from an E57 laser scan: host only, both backends ----
+list(APPEND SS_TOOL_SOURCES
+     ${SS_SRC}/app/cli/e57_main.cpp
+     ${SS_SRC}/app/cli/lidar_main.cpp
+     ${SS_SRC}/app/E57Dataset.cpp
+     ${SS_SRC}/app/LidarAlign.cpp
+     ${SS_SRC}/app/LidarDataset.cpp
+     ${SS_SRC}/app/ScanDepth.cpp
+     ${SS_SRC}/app/DepthPng.cpp)
+list(APPEND SS_TOOL_DEFS SS_TOOL_E57=1)
+
+# ---- fiducial marker tool: detect, align, crop ----
+list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/marker_main.cpp)
+list(APPEND SS_TOOL_DEFS SS_TOOL_MARKER=1)
 
 if(SS_BUILD_SFM)
     # ---- structure from motion ----
@@ -117,6 +158,18 @@ if(SS_BUILD_SFM)
 endif()
 
 if(SS_BUILD_SAM)
+    add_library(ss_mask_worker STATIC ${SS_SRC}/app/MaskWorker.cpp ${SS_SRC}/app/DepthPng.cpp)
+    target_include_directories(ss_mask_worker PRIVATE ${SS_SRC} ${CMAKE_BINARY_DIR})
+    target_compile_options(ss_mask_worker PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FLAGS}>)
+    target_link_libraries(ss_mask_worker PUBLIC ss_sam ss_inference_worker)
+    set_property(TARGET ss_mask_worker PROPERTY CXX_STANDARD 17)
+    add_executable(mask_worker_parity_test
+        ${SS_SRC}/app/tests/mask_worker_parity_test.cpp
+        ${SS_SRC}/app/FrameLook.cpp)
+    ss_configure_app(mask_worker_parity_test)
+    target_link_libraries(mask_worker_parity_test PRIVATE ss_mask_worker)
+    add_test(NAME mask_worker_manifest_test COMMAND mask_worker_parity_test --manifest-check)
+    set_tests_properties(mask_worker_manifest_test PROPERTIES LABELS "cpu;headless" TIMEOUT 30)
     # ---- segmentation / frame extraction ----
     # Frame extraction decodes with ffmpeg when the in-process decoder is not
     # built or the device has no video queue (app/FrameDecode.h).
@@ -128,8 +181,9 @@ if(SS_BUILD_SAM)
          ${SS_SRC}/app/FrameDecodeFfmpeg.cpp
          ${SS_SRC}/app/FfmpegVideo.cpp
          ${SS_SRC}/app/gui/Subprocess.cpp)
-    list(APPEND SS_TOOL_DEFS SS_TOOL_SAM=1)
-    list(APPEND SS_TOOL_LIBS ss_sam)
+    list(APPEND SS_TOOL_DEFS SS_TOOL_SAM=1 SS_HAVE_BLUR_GPU=1)
+    list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/cli/LicenseCli.cpp)
+    list(APPEND SS_TOOL_LIBS ss_mask_worker ss_sam ss_blur)
     if(SS_ENABLE_PATENTED)
         list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/FrameDecodeVulkan.cpp)
         list(APPEND SS_TOOL_LIBS ss_video)
@@ -147,7 +201,14 @@ if(SS_BUILD_SAM)
          ${SS_SRC}/app/GeometryWarp.cpp
          ${SS_SRC}/app/DepthPng.cpp)
     list(APPEND SS_TOOL_DEFS SS_TOOL_GEOMETRY=1)
-    list(APPEND SS_TOOL_LIBS ss_metric3d ss_moge)
+    list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/DenseProcessing.cpp)
+    list(APPEND SS_TOOL_DEFS SS_HAVE_ROMA=1)
+    list(APPEND SS_TOOL_LIBS ss_metric3d ss_moge ss_marigold ss_roma)
+
+    # ---- LPIPS in the eval pass, installed into TrainerCore by Main.cpp ----
+    list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/EvalLpips.cpp)
+    list(APPEND SS_TOOL_DEFS SS_HAVE_LPIPS=1)
+    list(APPEND SS_TOOL_LIBS ss_lpips)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -254,6 +315,10 @@ if(SS_BUILD_GUI)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         list(APPEND SS_TOOL_SOURCES ${SS_SRC}/app/gui/NativeDialogMac.mm)
         list(APPEND SS_TOOL_LIBS "-framework AppKit")
+        find_library(SS_UNIFORM_TYPE_IDENTIFIERS UniformTypeIdentifiers)
+        if(SS_UNIFORM_TYPE_IDENTIFIERS)
+            list(APPEND SS_TOOL_LIBS "-weak_framework UniformTypeIdentifiers")
+        endif()
     endif()
 
     # In-process segmentation and, with SS_ENABLE_PATENTED, video decoding.
@@ -270,6 +335,8 @@ endif()
 # ---------------------------------------------------------------------------
 # spirula -- the executable
 # ---------------------------------------------------------------------------
+# The GUI's licence dialog and the CLI's prompt read the same record.
+list(APPEND SS_TOOL_LIBS ss_license)
 # The frame extraction and ffmpeg files are claimed by both the segmentation
 # tool and the GUI.
 list(REMOVE_DUPLICATES SS_TOOL_SOURCES)
@@ -330,20 +397,22 @@ if(SS_SEPARATE_TOOLS)
             "SS_TOOL_SFM=1" "ss_sfm")
     endif()
     if(SS_BUILD_SAM)
-        set(_sam_src ${SS_SRC}/app/cli/sam_main.cpp ${SS_SRC}/app/FrameMask.cpp
+        set(_sam_src ${SS_SRC}/app/cli/sam_main.cpp ${SS_SRC}/app/CubeLut.cpp
+                     ${SS_SRC}/app/LogLuts.cpp
+                     ${SS_SRC}/app/FrameMask.cpp
                      ${SS_SRC}/app/FrameMaskSvg.cpp
                      ${SS_SRC}/app/FrameLook.cpp ${SS_SRC}/app/FrameMotion.cpp
                      ${SS_SRC}/app/FrameSharpness.cpp ${SS_SRC}/app/Pano360.cpp
                       ${SS_SRC}/app/cli/sam_extract.cpp ${SS_SRC}/app/FrameExtract.cpp
                       ${SS_SRC}/app/FrameGps.cpp
                      ${SS_SRC}/app/FrameDecodeFfmpeg.cpp ${SS_SRC}/app/FfmpegVideo.cpp
-                     ${SS_SRC}/app/gui/Subprocess.cpp)
-        set(_sam_lib ss_sam)
+                     ${SS_SRC}/app/gui/Subprocess.cpp ${SS_SRC}/app/cli/LicenseCli.cpp)
+        set(_sam_lib ss_mask_worker ss_sam ss_blur ss_license)
         if(SS_ENABLE_PATENTED)
             list(APPEND _sam_src ${SS_SRC}/app/FrameDecodeVulkan.cpp)
             list(APPEND _sam_lib ss_video)
         endif()
-        ss_tool_exe(spirula-sam "${_sam_src}" "SS_TOOL_SAM=1" "${_sam_lib}")
+        ss_tool_exe(spirula-sam "${_sam_src}" "SS_TOOL_SAM=1;SS_HAVE_BLUR_GPU=1" "${_sam_lib}")
     endif()
 endif()
 
@@ -354,6 +423,7 @@ endif()
 # ---------------------------------------------------------------------------
 file(GLOB SS_CORE_TESTS CONFIGURE_DEPENDS
      ${SS_SRC}/core/tests/*.cpp ${SS_SRC}/data/tests/*.cpp
+     ${SS_SRC}/dense/tests/*.cpp
      ${SS_SRC}/mesh/tests/*.cpp)
 foreach(test_src ${SS_CORE_TESTS})
     get_filename_component(test_name ${test_src} NAME_WE)
@@ -361,12 +431,98 @@ foreach(test_src ${SS_CORE_TESTS})
     ss_configure_app(${test_name})
 endforeach()
 
+# Optional independent decoder for tests; the application has no WebP dependency.
+find_path(SS_TEST_WEBP_INCLUDE_DIR webp/decode.h)
+find_library(SS_TEST_WEBP_LIBRARY NAMES webp)
+if(SS_TEST_WEBP_INCLUDE_DIR AND SS_TEST_WEBP_LIBRARY)
+    target_include_directories(webp_writer_test PRIVATE ${SS_TEST_WEBP_INCLUDE_DIR})
+    target_link_libraries(webp_writer_test PRIVATE ${SS_TEST_WEBP_LIBRARY})
+    target_compile_definitions(webp_writer_test PRIVATE SS_TEST_WEBP_DECODER=1)
+endif()
+
+if(SS_BUILD_SAM)
+    add_executable(dense_camera_test
+        ${SS_SRC}/app/tests/dense_camera_test.cpp
+        ${SS_SRC}/app/GeometryWarp.cpp)
+    ss_configure_app(dense_camera_test)
+    target_link_libraries(dense_camera_test PRIVATE ss_nn)
+    add_executable(geometry_model_budget_test
+        ${SS_SRC}/app/tests/geometry_model_budget_test.cpp
+        ${SS_SRC}/app/GeometryModel.cpp
+        ${SS_SRC}/app/GeometryWarp.cpp)
+    ss_configure_app(geometry_model_budget_test)
+    target_link_libraries(geometry_model_budget_test PRIVATE ss_moge ss_metric3d ss_marigold)
+endif()
+
+# .cube parsing and the tetrahedral map: a wrong colour is silent too.
+add_executable(cube_lut_test
+    ${SS_SRC}/app/tests/cube_lut_test.cpp
+    ${SS_SRC}/app/CubeLut.cpp
+    ${SS_SRC}/app/LogLuts.cpp)
+ss_configure_app(cube_lut_test)
+
 # The frame plan: no device, no GUI, and a wrong answer is silent.
 add_executable(frame_motion_test
     ${SS_SRC}/app/tests/frame_motion_test.cpp
     ${SS_SRC}/app/FrameMotion.cpp
     ${SS_SRC}/app/Pano360.cpp)
 ss_configure_app(frame_motion_test)
+
+# Which chosen frames are left out, and the blur measure behind it: no device.
+add_executable(frame_pick_test
+    ${SS_SRC}/app/tests/frame_pick_test.cpp
+    ${SS_SRC}/app/FrameSharpness.cpp)
+ss_configure_app(frame_pick_test)
+
+add_executable(model_download_test
+    ${SS_SRC}/app/tests/model_download_test.cpp
+    ${SS_SRC}/app/gui/ModelCache.cpp
+    ${SS_SRC}/app/gui/ProgressClock.cpp
+    ${SS_SRC}/app/gui/Subprocess.cpp
+    ${SS_SRC}/app/AppPaths.cpp)
+ss_configure_app(model_download_test)
+target_link_libraries(model_download_test PRIVATE ss_license)
+
+add_executable(subprocess_lifecycle_test
+    ${SS_SRC}/app/gui/tests/subprocess_lifecycle_test.cpp
+    ${SS_SRC}/app/gui/Subprocess.cpp)
+target_include_directories(subprocess_lifecycle_test PRIVATE ${SS_SRC})
+target_link_libraries(subprocess_lifecycle_test PRIVATE Threads::Threads)
+set_property(TARGET subprocess_lifecycle_test PROPERTY CXX_STANDARD 17)
+target_compile_options(subprocess_lifecycle_test PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FLAGS}>)
+enable_testing()
+add_test(NAME subprocess_lifecycle_test COMMAND subprocess_lifecycle_test)
+set_tests_properties(subprocess_lifecycle_test PROPERTIES
+    LABELS "cpu;headless" TIMEOUT 600)
+
+if(NOT WIN32)
+    add_executable(http_server_test
+        ${SS_SRC}/app/tests/http_server_test.cpp
+        ${SS_SRC}/app/webviewer/HttpServer.cpp)
+    target_include_directories(http_server_test PRIVATE ${SS_SRC})
+    target_link_libraries(http_server_test PRIVATE Threads::Threads)
+    set_property(TARGET http_server_test PROPERTY CXX_STANDARD 17)
+    add_test(NAME http_server_test COMMAND http_server_test)
+    set_tests_properties(http_server_test PROPERTIES LABELS "cpu;headless" TIMEOUT 60)
+endif()
+
+add_executable(inference_worker_test ${SS_SRC}/app/tests/inference_worker_test.cpp)
+target_include_directories(inference_worker_test PRIVATE ${SS_SRC})
+target_link_libraries(inference_worker_test PRIVATE ss_inference_worker)
+set_property(TARGET inference_worker_test PROPERTY CXX_STANDARD 17)
+add_test(NAME inference_worker_test COMMAND inference_worker_test)
+set_tests_properties(inference_worker_test PROPERTIES LABELS "cpu;headless" TIMEOUT 60)
+
+add_executable(inference_worker_devices_test ${SS_SRC}/app/tests/inference_worker_devices_test.cpp)
+target_include_directories(inference_worker_devices_test PRIVATE ${SS_SRC})
+set_property(TARGET inference_worker_devices_test PROPERTY CXX_STANDARD 17)
+add_test(NAME inference_worker_devices_test COMMAND inference_worker_devices_test)
+set_tests_properties(inference_worker_devices_test PROPERTIES LABELS "cpu;headless" TIMEOUT 60)
+if(SS_BUILD_SAM)
+    add_test(NAME geometry_model_budget_test COMMAND geometry_model_budget_test)
+    set_tests_properties(geometry_model_budget_test PROPERTIES LABELS "cpu;headless" TIMEOUT 60)
+endif()
 
 add_executable(packed_lens_test
     ${SS_SRC}/app/tests/packed_lens_test.cpp
@@ -396,6 +552,31 @@ add_executable(person_gate_test
     ${SS_SRC}/app/Pano360.cpp)
 ss_configure_app(person_gate_test)
 
+# A scan written out as a dataset, then read back by the trainer's parser.
+add_executable(e57_dataset_test
+    ${SS_SRC}/app/tests/e57_dataset_test.cpp
+    ${SS_SRC}/app/E57Dataset.cpp
+    ${SS_SRC}/app/ScanDepth.cpp
+    ${SS_SRC}/app/DepthPng.cpp)
+ss_configure_app(e57_dataset_test)
+
+add_executable(scan_depth_test
+    ${SS_SRC}/app/tests/scan_depth_test.cpp
+    ${SS_SRC}/app/ScanDepth.cpp)
+ss_configure_app(scan_depth_test)
+
+add_executable(lidar_align_test
+    ${SS_SRC}/app/tests/lidar_align_test.cpp
+    ${SS_SRC}/app/LidarAlign.cpp
+    ${SS_SRC}/app/E57Dataset.cpp
+    ${SS_SRC}/app/ScanDepth.cpp
+    ${SS_SRC}/app/DepthPng.cpp)
+ss_configure_app(lidar_align_test)
+
+add_executable(system_recorder_test
+    ${SS_SRC}/app/tests/system_recorder_test.cpp)
+ss_configure_app(system_recorder_test)
+
 # The stencil shapes, spelling and fill, with no GUI: FrameMask.cpp is compiled
 # into the CLI too, so this must link without imgui.
 add_executable(frame_mask_test
@@ -405,28 +586,50 @@ add_executable(frame_mask_test
     ${SS_SRC}/app/FrameLook.cpp)
 ss_configure_app(frame_mask_test)
 
-# The GUI files with no GUI in them: the stamp that decides whether a finished
-# reconstruction is kept or built again, and the preset serializers. Named
-# rather than globbed -- each such test names its own sources.
+add_executable(ffmpeg_probe_test
+    ${SS_SRC}/app/tests/ffmpeg_probe_test.cpp
+    ${SS_SRC}/app/FfmpegVideo.cpp
+    ${SS_SRC}/app/gui/Subprocess.cpp)
+ss_configure_app(ffmpeg_probe_test)
+
+# The GUI files with no GUI in them: the plan that decides which steps of a
+# dataset run are kept or redone, and the preset serializers. Named rather
+# than globbed -- each such test names its own sources.
 if(SS_BUILD_GUI)
-    add_executable(recon_stamp_test
-        ${SS_SRC}/app/gui/tests/recon_stamp_test.cpp
-        ${SS_SRC}/app/gui/ReconStamp.cpp)
-    ss_configure_app(recon_stamp_test)
-
-    add_executable(frames_stamp_test
-        ${SS_SRC}/app/gui/tests/frames_stamp_test.cpp
-        ${SS_SRC}/app/gui/ReconStamp.cpp)
-    ss_configure_app(frames_stamp_test)
-
     add_executable(command_argv_test
         ${SS_SRC}/app/gui/tests/command_argv_test.cpp
         ${SS_SRC}/app/gui/Subprocess.cpp)
     ss_configure_app(command_argv_test)
 
+    add_executable(dense_live_preview_test
+        ${SS_SRC}/app/gui/tests/dense_live_preview_test.cpp
+        ${SS_SRC}/app/gui/SfmProgress.cpp
+        ${SS_SRC}/app/gui/PreviewRenderer.cpp
+        ${SS_SRC}/app/gui/GlLoader.cpp)
+    ss_configure_app(dense_live_preview_test)
+    target_link_libraries(dense_live_preview_test PRIVATE glfw OpenGL::GL)
+
+    if(SS_BUILD_SFM)
+        add_executable(sfm_live_preview_test
+            ${SS_SRC}/app/gui/tests/sfm_live_preview_test.cpp
+            ${SS_SRC}/app/gui/SfmProgress.cpp)
+        ss_configure_app(sfm_live_preview_test)
+        target_link_libraries(sfm_live_preview_test PRIVATE ss_sfm)
+    endif()
+
     add_executable(align_fit_test
         ${SS_SRC}/app/gui/tests/align_fit_test.cpp)
     ss_configure_app(align_fit_test)
+
+    add_executable(progress_clock_test
+        ${SS_SRC}/app/gui/tests/progress_clock_test.cpp
+        ${SS_SRC}/app/gui/ProgressClock.cpp)
+    ss_configure_app(progress_clock_test)
+
+    add_executable(recent_list_test
+        ${SS_SRC}/app/gui/tests/recent_list_test.cpp
+        ${SS_SRC}/app/gui/RecentList.cpp)
+    ss_configure_app(recent_list_test)
 
     add_executable(attributes_test
         ${SS_SRC}/app/gui/tests/attributes_test.cpp
@@ -457,6 +660,18 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/gui/edit/Selection.cpp)
     ss_configure_app(sky_dome_real_test)
 
+    add_executable(distance_scale_test
+        ${SS_SRC}/app/gui/tests/distance_scale_test.cpp
+        ${SS_SRC}/app/gui/edit/DistanceScaleTool.cpp
+        ${SS_SRC}/app/gui/edit/SelectShape.cpp
+        ${SS_SRC}/app/gui/edit/EditDoc.cpp
+        ${SS_SRC}/app/gui/edit/ElementGrid.cpp
+        ${SS_SRC}/app/gui/edit/Selection.cpp
+        ${SS_SRC}/app/gui/Automation.cpp
+        ${SS_SRC}/app/AppPaths.cpp)
+    ss_configure_app(distance_scale_test)
+    target_link_libraries(distance_scale_test PRIVATE imgui_glfw OpenGL::GL)
+
     add_executable(rig_guess_test
         ${SS_SRC}/app/gui/tests/rig_guess_test.cpp
         ${SS_SRC}/app/gui/RigGuess.cpp)
@@ -480,6 +695,26 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/AppPaths.cpp)
     ss_configure_app(preset_roundtrip_test)
 
+    add_executable(match_matrix_editor_test
+        ${SS_SRC}/app/gui/tests/match_matrix_editor_test.cpp
+        ${SS_SRC}/app/gui/MatchMatrixEditor.cpp
+        ${SS_SRC}/app/gui/MatchMatrix.cpp
+        ${SS_SRC}/app/gui/PairPreview.cpp
+        ${SS_SRC}/app/gui/Picture.cpp
+        ${SS_SRC}/app/gui/SfmProgress.cpp
+        ${SS_SRC}/app/gui/GlLoader.cpp
+        ${SS_SRC}/app/gui/Layout.cpp
+        ${SS_SRC}/app/gui/Automation.cpp
+        ${SS_SRC}/app/AppPaths.cpp
+        ${SS_SRC}/app/FrameMask.cpp
+        ${SS_SRC}/app/FrameMaskSvg.cpp
+        ${SS_SRC}/app/FrameLook.cpp
+        ${SS_SRC}/app/gui/Subprocess.cpp
+        ${SS_SRC}/app/gui/HeifPhoto.cpp)
+    ss_configure_app(match_matrix_editor_test)
+    target_link_libraries(match_matrix_editor_test PRIVATE imgui_glfw OpenGL::GL)
+    target_compile_definitions(match_matrix_editor_test PRIVATE SS_TOOL_SFM=1)
+
     add_executable(stencil_edit_test
         ${SS_SRC}/app/gui/tests/stencil_edit_test.cpp
         ${SS_SRC}/app/gui/StencilEdit.cpp
@@ -490,6 +725,14 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/FrameMaskSvg.cpp
         ${SS_SRC}/app/FrameLook.cpp)
     ss_configure_app(stencil_edit_test)
+
+    add_executable(stencil_rows_test
+        ${SS_SRC}/app/gui/tests/stencil_rows_test.cpp
+        ${SS_SRC}/app/gui/StencilRows.cpp
+        ${SS_SRC}/app/FrameMask.cpp
+        ${SS_SRC}/app/FrameMaskSvg.cpp
+        ${SS_SRC}/app/FrameLook.cpp)
+    ss_configure_app(stencil_rows_test)
 
     # The mask editor's layer, document and session, none of which draw.
     add_executable(mask_doc_test
@@ -513,25 +756,121 @@ if(SS_BUILD_GUI)
         ${SS_SRC}/app/gui/mask/MaskSlideshow.cpp)
     ss_configure_app(mask_doc_test)
 
+    # The frames reel DatasetPrep fills, without FilmReelView.cpp's drawing.
+    set(SS_FILM_REEL_SOURCES
+        ${SS_SRC}/app/gui/FilmReel.cpp
+        ${SS_SRC}/app/gui/Picture.cpp
+        ${SS_SRC}/app/gui/SfmProgress.cpp)
+
     # DatasetPrep's two seams with the mask editor's layer folder, run for
     # real. Built without SS_BUILD_SAM or the video decoder: no model.
     add_executable(dataset_prep_test
         ${SS_SRC}/app/gui/tests/dataset_prep_test.cpp
         ${SS_SRC}/app/gui/DatasetPrep.cpp
+        ${SS_SRC}/app/gui/HeifPhoto.cpp
         ${SS_SRC}/app/gui/FrameSelect.cpp
+        ${SS_SRC}/app/gui/PickSheet.cpp
         ${SS_SRC}/app/FrameSharpness.cpp
         ${SS_SRC}/app/FfmpegVideo.cpp
         ${SS_SRC}/app/gui/PrepProgress.cpp
-        ${SS_SRC}/app/gui/ReconStamp.cpp
+        ${SS_SRC}/app/gui/ProgressClock.cpp
+        ${SS_SRC}/app/gui/DatasetRecord.cpp
         ${SS_SRC}/app/gui/Subprocess.cpp
         ${SS_SRC}/app/gui/mask/MaskLayer.cpp
         ${SS_SRC}/app/FrameMask.cpp
         ${SS_SRC}/app/FrameMaskSvg.cpp
-         ${SS_SRC}/app/FrameLook.cpp
-         ${SS_SRC}/app/FrameMotion.cpp
-         ${SS_SRC}/app/FrameGps.cpp
-         ${SS_SRC}/app/Pano360.cpp)
+        ${SS_SRC}/app/FrameLook.cpp
+        ${SS_SRC}/app/FrameMotion.cpp
+        ${SS_SRC}/app/CubeLut.cpp
+        ${SS_SRC}/app/LogLuts.cpp
+        ${SS_SRC}/app/FrameGps.cpp
+        ${SS_SRC}/app/Pano360.cpp
+        ${SS_FILM_REEL_SOURCES})
     ss_configure_app(dataset_prep_test)
+
+    if(SS_BUILD_SAM)
+        get_target_property(SS_DATASET_PREP_TEST_SOURCES dataset_prep_test SOURCES)
+        list(REMOVE_ITEM SS_DATASET_PREP_TEST_SOURCES
+            ${SS_SRC}/app/gui/tests/dataset_prep_test.cpp)
+        add_executable(dataset_prep_streaming_test
+            ${SS_SRC}/app/gui/tests/dataset_prep_streaming_test.cpp
+            ${SS_DATASET_PREP_TEST_SOURCES}
+            ${SS_SRC}/app/AppPaths.cpp
+            ${SS_SRC}/app/DepthPng.cpp
+            ${SS_SRC}/app/FrameExtract.cpp
+            ${SS_SRC}/app/FrameDecodeFfmpeg.cpp
+            ${SS_SRC}/app/GoProBin.cpp
+            ${SS_SRC}/app/GoProMask.cpp
+            ${SS_SRC}/app/PersonRays.cpp
+            ${SS_SRC}/app/PersonStore.cpp
+            ${SS_SRC}/app/ScanIndex.cpp
+            ${SS_SRC}/app/TrackingCropBridge.cpp)
+        ss_configure_app(dataset_prep_streaming_test)
+        target_compile_definitions(dataset_prep_streaming_test PRIVATE
+            SS_BUILD_SAM=1 SS_HAVE_BLUR_GPU=1)
+        target_link_libraries(dataset_prep_streaming_test PRIVATE ss_mask_worker ss_sam ss_blur)
+        if(SS_ENABLE_PATENTED)
+            target_sources(dataset_prep_streaming_test PRIVATE
+                ${SS_SRC}/app/FrameDecodeVulkan.cpp)
+            target_link_libraries(dataset_prep_streaming_test PRIVATE ss_video)
+        endif()
+    endif()
+
+    # Which steps a dataset run reuses and which it redoes, against records
+    # written to a scratch workspace. The same sources as above, no model.
+    add_executable(dataset_plan_test
+        ${SS_SRC}/app/gui/tests/dataset_plan_test.cpp
+        ${SS_SRC}/app/gui/DatasetPlan.cpp
+        ${SS_SRC}/app/gui/DatasetRecord.cpp
+        ${SS_SRC}/app/gui/DatasetPrep.cpp
+        ${SS_SRC}/app/gui/HeifPhoto.cpp
+        ${SS_SRC}/app/gui/FrameSelect.cpp
+        ${SS_SRC}/app/gui/PickSheet.cpp
+        ${SS_SRC}/app/FrameSharpness.cpp
+        ${SS_SRC}/app/FfmpegVideo.cpp
+        ${SS_SRC}/app/gui/PrepProgress.cpp
+        ${SS_SRC}/app/gui/ProgressClock.cpp
+        ${SS_SRC}/app/gui/Subprocess.cpp
+        ${SS_SRC}/app/gui/mask/MaskLayer.cpp
+        ${SS_SRC}/app/FrameMask.cpp
+        ${SS_SRC}/app/FrameMaskSvg.cpp
+        ${SS_SRC}/app/FrameLook.cpp
+        ${SS_SRC}/app/FrameMotion.cpp
+        ${SS_SRC}/app/CubeLut.cpp
+        ${SS_SRC}/app/LogLuts.cpp
+        ${SS_SRC}/app/FrameGps.cpp
+        ${SS_SRC}/app/Pano360.cpp
+        ${SS_FILM_REEL_SOURCES})
+    ss_configure_app(dataset_plan_test)
+
+    get_target_property(SS_BATCH_TEST_SOURCES dataset_plan_test SOURCES)
+    list(REMOVE_ITEM SS_BATCH_TEST_SOURCES
+        ${SS_SRC}/app/gui/tests/dataset_plan_test.cpp)
+    add_executable(batch_process_test
+        ${SS_SRC}/app/gui/tests/batch_process_test.cpp
+        ${SS_BATCH_TEST_SOURCES}
+        ${SS_SRC}/app/gui/BatchProcess.cpp
+        ${SS_SRC}/app/gui/SourceList.cpp
+        ${SS_SRC}/app/gui/RigGuess.cpp
+        ${SS_SRC}/app/gui/DatasetPreset.cpp
+        ${SS_SRC}/app/gui/TrainPreset.cpp
+        ${SS_SRC}/app/gui/MeshPreset.cpp
+        ${SS_SRC}/app/gui/MeshJob.cpp
+        ${SS_SRC}/app/gui/StencilPreset.cpp
+        ${SS_SRC}/app/gui/PresetFile.cpp
+        ${SS_SRC}/app/AppPaths.cpp)
+    ss_configure_app(batch_process_test)
+endif()
+
+# `--accept-license` through the real binary (Main.cpp), not a stand-in for it.
+if(SS_BUILD_SAM)
+    add_executable(accept_license_cli_test ${SS_SRC}/app/tests/accept_license_cli_test.cpp)
+    add_dependencies(accept_license_cli_test spirula)
+    target_compile_definitions(accept_license_cli_test PRIVATE
+        SS_SPIRULA_EXE="$<TARGET_FILE:spirula>")
+    set_property(TARGET accept_license_cli_test PROPERTY CXX_STANDARD 17)
+    target_compile_options(accept_license_cli_test PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:${SPLAT_CXX_FLAGS}>)
 endif()
 
 if(SS_BUILD_SAM)

@@ -415,19 +415,23 @@ void GeometryPanel::start_job(const GeometryJob& settings) {
                                                        cam.height, cam.fx, cam.fy)
                     : settings.split == 1;
             app::GeometryWarp warp;
-            warp.plan(cam, ow, oh, split, patch, settings.max_size);
+            warp.plan(cam, ow, oh, split, patch, settings.max_size,
+                      settings.face_res == 1 ? app::FaceRes::Source : app::FaceRes::Output,
+                      app::GeometryModel::minFacePixels());
 
             // ---- run ----
             set_status(dmsg::geom_preview_running);
             const std::vector<float> rgb =
                 app::resize_area(j.frame.px.data(), j.frame.w, j.frame.h, 3,
                                  warp.sampleWidth(), warp.sampleHeight());
-            std::vector<std::vector<float>> face_depth, face_normal;
+            std::vector<std::vector<float>> face_depth, face_normal, face_mask;
             std::vector<float> face_rgb;
             // The first call after a load builds the pipelines and measures the
             // GEMM tiling, so timing it reports about 3x the steady-state cost
             // -- and that number is what the whole-capture estimate is made of.
-            if (just_loaded) {
+            if (just_loaded && !j.pred.cheapWarmup()) {
+                j.pred.prepare(face_request(warp, 0, settings.num_tokens));
+            } else if (just_loaded) {
                 warp.sampleFace(0, rgb.data(), face_rgb);
                 app::GeometryRequest warm =
                     face_request(warp, 0, settings.num_tokens);
@@ -440,19 +444,30 @@ void GeometryPanel::start_job(const GeometryJob& settings) {
             const sfm::ExifTransform turn = app::photo_turn(frame.path);
             const sfm::ExifTransform back = app::inverse_turn(turn);
             const double t0 = nn::now_ms();
+            // Both maps, whatever the checkboxes say: they decide what the RUN
+            // writes, and a pane that appears without another forward pass is
+            // worth the decoder head.
+            std::vector<std::vector<float>> rgbs;
+            std::vector<app::GeometryRequest> reqs;
             for (int k = 0; k < warp.faces(); k++) {
-                if (_cancel.load()) return;
                 warp.sampleFace(k, rgb.data(), face_rgb);
                 app::GeometryRequest rq = face_request(warp, k, settings.num_tokens);
                 int fw = rq.width, fh = rq.height;
                 app::turn_pixels(turn, 3, face_rgb, fw, fh);
-                // Both maps, whatever the checkboxes say: they decide what the
-                // RUN writes, and a pane that appears without another forward
-                // pass is worth the decoder head.
-                app::GeometryPrediction p =
-                    j.pred.predict(face_rgb.data(), app::turn_request(rq, turn));
+                reqs.push_back(app::turn_request(rq, turn));
+                rgbs.push_back(face_rgb);
+            }
+            if (_cancel.load()) return;
+            std::vector<const float*> faces;
+            for (const std::vector<float>& f : rgbs) faces.push_back(f.data());
+            std::vector<app::GeometryPrediction> preds = j.pred.predictBatch(faces, reqs);
+            for (int k = 0; k < warp.faces(); k++) {
+                app::GeometryPrediction& p = preds[(size_t)k];
                 int dw = p.width, dh = p.height;
                 app::turn_pixels(back, 1, p.depth, dw, dh);
+                dw = p.width;
+                dh = p.height;
+                app::turn_pixels(back, 1, p.mask, dw, dh);
                 dw = p.width;
                 dh = p.height;
                 app::turn_normals(back, p.normal, dw, dh);
@@ -462,12 +477,13 @@ void GeometryPanel::start_job(const GeometryJob& settings) {
                 for (float& d : p.depth) d *= mm;
                 face_depth.push_back(std::move(p.depth));
                 face_normal.push_back(std::move(p.normal));
+                face_mask.push_back(std::move(p.mask));
             }
             const double each = nn::now_ms() - t0;
             std::vector<float> depth, normal;
             const bool ray = settings.ray_depth == 0 ? warp.defaultRayDepth()
                                                      : settings.ray_depth == 1;
-            warp.gather(face_depth, face_normal, ray, &depth, &normal);
+            warp.gather(face_depth, face_normal, face_mask, ray, &depth, &normal);
 
             auto normals = normal_picture(normal, warp.outWidth(), warp.outHeight());
             auto depths = depth_picture(depth, warp.outWidth(), warp.outHeight());

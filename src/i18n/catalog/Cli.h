@@ -108,6 +108,43 @@ SS_MSG(tool_geometry,
     NL("diepte en oppervlaktenormalen van een dataset schatten"),
     RU("оценить глубину и нормали поверхности набора данных"),
     TR("bir veri kümesinin derinliğini ve yüzey normallerini kestir"));
+SS_MSG(tool_lidar,
+    EN("align a reconstruction with a laser scan (E57, LAS, PLY) and add its geometry"),
+    JA("再構成をレーザースキャン（E57、LAS、PLY）に位置合わせし、その形状を加える"),
+    ZH_HANS("把重建与激光扫描（E57、LAS、PLY）对齐，并加入其几何信息"),
+    ZH_HANT("把重建與雷射掃描（E57、LAS、PLY）對齊，並加入其幾何資訊"),
+    KO("재구성을 레이저 스캔(E57, LAS, PLY)에 정렬하고 그 형상을 추가"),
+    DE("eine Rekonstruktion an einem Laserscan (E57, LAS, PLY) ausrichten und seine "
+       "Geometrie hinzufügen"),
+    FR("aligner une reconstruction sur un scan laser (E57, LAS, PLY) et y ajouter sa "
+       "géométrie"),
+    ES("alinear una reconstrucción con un escaneo láser (E57, LAS, PLY) y añadir su "
+       "geometría"),
+    PT("alinhar uma reconstrução a uma varredura a laser (E57, LAS, PLY) e acrescentar "
+       "sua geometria"),
+    IT("allineare una ricostruzione a una scansione laser (E57, LAS, PLY) e aggiungerne "
+       "la geometria"),
+    NL("een reconstructie uitlijnen op een laserscan (E57, LAS, PLY) en de geometrie "
+       "ervan toevoegen"),
+    RU("совместить реконструкцию с лазерным сканом (E57, LAS, PLY) и добавить его "
+       "геометрию"),
+    TR("bir yeniden oluşturmayı lazer taramasıyla (E57, LAS, PLY) hizala ve "
+       "geometrisini ekle"));
+
+SS_MSG(tool_e57,
+    EN("make a training dataset from an E57 laser scan"),
+    JA("E57 レーザースキャンから学習用データセットを作る"),
+    ZH_HANS("从 E57 激光扫描生成训练数据集"),
+    ZH_HANT("從 E57 雷射掃描產生訓練資料集"),
+    KO("E57 레이저 스캔으로 학습용 데이터셋 만들기"),
+    DE("einen Trainingsdatensatz aus einem E57-Laserscan erstellen"),
+    FR("créer un jeu de données d'entraînement à partir d'un scan laser E57"),
+    ES("crear un conjunto de datos de entrenamiento a partir de un escaneo láser E57"),
+    PT("criar um conjunto de dados de treino a partir de uma varredura a laser E57"),
+    IT("creare un set di dati di addestramento da una scansione laser E57"),
+    NL("een trainingsdataset maken uit een E57-laserscan"),
+    RU("создать набор данных для обучения из лазерного скана E57"),
+    TR("bir E57 lazer taramasından eğitim veri kümesi oluştur"));
 SS_MSG(tool_partition,
     EN("split a reconstruction into parts to train separately, and merge them"),
     JA("再構成を別々に学習するパートに分割し、あとで結合する"),
@@ -151,6 +188,21 @@ SS_MSG(tool_mesh,
     NL("een mesh uit een getraind model halen"),
     RU("извлечь меш из обученной модели"),
     TR("eğitilmiş bir modelden ağ çıkarmak"));
+
+SS_MSG(tool_marker,
+    EN("detect fiducial markers (AprilTag) to align coordinates, scale and crop"),
+    JA("座標の整列・スケーリング・クロップのためにマーカー（AprilTag）を検出する"),
+    ZH_HANS("检测基准标记（AprilTag）以对齐坐标系、缩放与裁剪"),
+    ZH_HANT("偵測基準標記（AprilTag）以對齊座標系、縮放與裁切"),
+    KO("좌표 정렬, 스케일링 및 자르기를 위해 기준 마커(AprilTag) 감지"),
+    DE("Passermarken (AprilTag) erkennen, um Koordinaten auszurichten, zu skalieren und zuzuschneiden"),
+    FR("détecter des marqueurs (AprilTag) pour aligner les coordonnées, mettre à l'échelle et rogner"),
+    ES("detectar marcadores fiduciarios (AprilTag) para alinear coordenadas, escalar y recortar"),
+    PT("detectar marcadores fiduciários (AprilTag) para alinhar coordenadas, dimensionar e recortar"),
+    IT("rilevare marcatori fiduciari (AprilTag) per allineare coordinate, scalare e ritagliare"),
+    NL("passermerken (AprilTag) detecteren om coördinaten uit te lijnen, te schalen en bij te snijden"),
+    RU("обнаружение меток (AprilTag) для выравнивания координат, масштабирования и обрезки"),
+    TR("koordinatları hizalamak, ölçeklemek ve kırpmak için işaretçileri (AprilTag) tespit et"));
 
 // ===========================================================================
 // `spirula --help` -- the usage block itself
@@ -369,40 +421,19 @@ SS_MSG(train_app_flags_header,
     RU("флаги приложения:"),
     TR("uygulama seçenekleri:"));
 SS_MSG(train_device_help,
-    EN("Compute device to train on (default: auto): an index, part of a name, "
-       "`auto`, or uuid:<32 hex digits>. The device list prints at startup."),
-    JA("学習に使う計算デバイス（既定は自動）: 番号、名前の一部、`auto`、または "
-       "uuid:<32 桁の 16 進数>。デバイスの一覧は起動時に表示されます。"),
-    ZH_HANS("用于训练的计算设备（默认自动）：序号、名称的一部分、`auto`，"
-            "或 uuid:<32 位十六进制>。设备列表会在启动时打印。"),
-    ZH_HANT("用於訓練的計算裝置（預設自動）：序號、名稱的一部分、`auto`，"
-            "或 uuid:<32 位十六進位>。裝置清單會在啟動時列出。"),
-    KO("학습에 쓸 연산 장치(기본값은 자동): 번호, 이름의 일부, `auto`, 또는 "
-       "uuid:<32자리 16진수>. 장치 목록은 시작할 때 출력됩니다."),
-    DE("Rechengerät für das Training (Standard: automatisch): ein Index, ein "
-       "Teil des Namens, `auto` oder uuid:<32 Hexziffern>. Die Geräteliste wird "
-       "beim Start ausgegeben."),
-    FR("Périphérique de calcul pour l'entraînement (par défaut : automatique) : "
-       "un indice, une partie d'un nom, `auto` ou uuid:<32 chiffres "
-       "hexadécimaux>. La liste des périphériques s'affiche au démarrage."),
-    ES("Dispositivo de cálculo con el que entrenar (por defecto: automático): un "
-       "índice, parte de un nombre, `auto` o uuid:<32 dígitos hexadecimales>. La "
-       "lista de dispositivos se imprime al arrancar."),
-    PT("Dispositivo de cálculo para treinar (padrão: automático): um índice, "
-       "parte de um nome, `auto` ou uuid:<32 dígitos hexadecimais>. A lista de "
-       "dispositivos é impressa na inicialização."),
-    IT("Dispositivo di calcolo su cui addestrare (predefinito: automatico): un "
-       "indice, parte di un nome, `auto` o uuid:<32 cifre esadecimali>. L'elenco "
-       "dei dispositivi viene stampato all'avvio."),
-    NL("Rekenapparaat om op te trainen (standaard: automatisch): een index, deel "
-       "van een naam, `auto` of uuid:<32 hexcijfers>. De apparatenlijst wordt "
-       "bij het starten afgedrukt."),
-    RU("Вычислительное устройство для обучения (по умолчанию автоматически): "
-       "номер, часть имени, `auto` или uuid:<32 шестнадцатеричные цифры>. "
-       "Список устройств печатается при запуске."),
-    TR("Eğitimin yapılacağı işlem aygıtı (varsayılan: otomatik): bir sıra, adın "
-       "bir parçası, `auto` veya uuid:<32 onaltılık basamak>. Aygıt listesi "
-       "başlangıçta yazdırılır."));
+    EN("Compute device to train on (default: auto): an index, part of a name, `auto`, or uuid:<32 hex digits>. The device list prints at startup."),
+    JA("学習に使う計算デバイス（既定は自動）: 番号、名前の一部、`auto`、または uuid:<32 桁の 16 進数>。デバイスの一覧は起動時に表示されます。"),
+    ZH_HANS("用于训练的计算设备（默认自动）：序号、名称的一部分、`auto`，或 uuid:<32 位十六进制>。设备列表会在启动时打印。"),
+    ZH_HANT("用於訓練的計算裝置（預設自動）：序號、名稱的一部分、`auto`，或 uuid:<32 位十六進位>。裝置清單會在啟動時列出。"),
+    KO("학습에 쓸 연산 장치(기본값은 자동): 번호, 이름의 일부, `auto`, 또는 uuid:<32자리 16진수>. 장치 목록은 시작할 때 출력됩니다."),
+    DE("Rechengerät für das Training (Standard: automatisch): ein Index, ein Teil des Namens, `auto` oder uuid:<32 Hexziffern>. Die Geräteliste wird beim Start ausgegeben."),
+    FR("GPU d’entraînement (auto par défaut) : indice, partie du nom, auto ou uuid:<32 chiffres hex>. Liste affichée au démarrage."),
+    ES("GPU de entrenamiento (auto por defecto): índice, parte del nombre, auto o uuid:<32 dígitos hex>. Lista al iniciar."),
+    PT("GPU de treino (padrão auto): índice, parte do nome, auto ou uuid:<32 dígitos hex>. Lista no arranque."),
+    IT("GPU di addestramento (predefinito auto): indice, parte del nome, auto o uuid:<32 cifre hex>. Elenco all’avvio."),
+    NL("Rekenapparaat om op te trainen (standaard: automatisch): een index, deel van een naam, `auto` of uuid:<32 hexcijfers>. De apparatenlijst wordt bij het starten afgedrukt."),
+    RU("GPU обучения (по умолчанию auto): номер, часть имени, auto или uuid:<32 hex-цифры>. Список выводится при старте."),
+    TR("Eğitimin yapılacağı işlem aygıtı (varsayılan: otomatik): bir sıra, adın bir parçası, `auto` veya uuid:<32 onaltılık basamak>. Aygıt listesi başlangıçta yazdırılır."));
 // The CUDA backend has no device identity to carry, so its selector is an
 // ordinal and nothing else.
 SS_MSG(train_device_help_cuda,
@@ -585,6 +616,54 @@ SS_MSG(train_done_viewer,
        "выйти."),
     TR("Eğitim tamamlandı. Görüntüleyici hâlâ çalışıyor -- çıkmak için Ctrl-C'ye "
        "basın."));
+SS_MSG(train_stopping,
+    EN("Stopping after this step and saving a checkpoint to resume from. Press "
+       "Ctrl-C again to quit without saving."),
+    JA("このステップの後で停止し、再開用のチェックポイントを保存します。保存せず"
+       "に終了するには、もう一度 Ctrl-C を押してください。"),
+    ZH_HANS("将在本步之后停止，并保存可继续训练的检查点。再按一次 Ctrl-C 则不保存"
+            "直接退出。"),
+    ZH_HANT("將在本步之後停止，並儲存可繼續訓練的檢查點。再按一次 Ctrl-C 則不儲存"
+            "直接結束。"),
+    KO("이 단계가 끝나면 멈추고 이어서 학습할 체크포인트를 저장합니다. 저장하지 "
+       "않고 끝내려면 Ctrl-C를 한 번 더 누르세요."),
+    DE("Hält nach diesem Schritt an und speichert einen Checkpoint zum Fortsetzen. "
+       "Erneut Strg-C drücken, um ohne Speichern zu beenden."),
+    FR("Arrêt après cette étape, avec une sauvegarde pour reprendre. Appuyez à "
+       "nouveau sur Ctrl-C pour quitter sans enregistrer."),
+    ES("Se detiene tras este paso y guarda un punto de control para continuar. "
+       "Pulsa Ctrl-C otra vez para salir sin guardar."),
+    PT("Parando após este passo e salvando um checkpoint para continuar. "
+       "Pressione Ctrl-C de novo para sair sem salvar."),
+    IT("Arresto dopo questo passo, con un checkpoint da cui riprendere. Premi di "
+       "nuovo Ctrl-C per uscire senza salvare."),
+    NL("Stopt na deze stap en slaat een checkpoint op om te hervatten. Druk "
+       "nogmaals op Ctrl-C om te stoppen zonder op te slaan."),
+    RU("Остановка после этого шага с сохранением контрольной точки для "
+       "продолжения. Нажмите Ctrl-C ещё раз, чтобы выйти без сохранения."),
+    TR("Bu adımdan sonra durulup devam etmek için bir denetim noktası "
+       "kaydediliyor. Kaydetmeden çıkmak için Ctrl-C'ye yeniden basın."));
+SS_MSG(train_stopped_resume,
+    EN("Stopped at step {0} of {1}. To continue: spirula train --resume \"{2}\""),
+    JA("{1} ステップ中 {0} ステップで停止しました。続けるには: spirula train "
+       "--resume \"{2}\""),
+    ZH_HANS("已在第 {0} 步（共 {1} 步）停止。要继续：spirula train --resume \"{2}\""),
+    ZH_HANT("已在第 {0} 步（共 {1} 步）停止。要繼續：spirula train --resume \"{2}\""),
+    KO("{1}단계 중 {0}단계에서 멈췄습니다. 이어서 하려면: spirula train --resume "
+       "\"{2}\""),
+    DE("Bei Schritt {0} von {1} angehalten. Zum Fortsetzen: spirula train --resume "
+       "\"{2}\""),
+    FR("Arrêté à l'étape {0} sur {1}. Pour reprendre : spirula train --resume "
+       "\"{2}\""),
+    ES("Detenido en el paso {0} de {1}. Para continuar: spirula train --resume "
+       "\"{2}\""),
+    PT("Parado no passo {0} de {1}. Para continuar: spirula train --resume \"{2}\""),
+    IT("Fermato al passo {0} di {1}. Per riprendere: spirula train --resume \"{2}\""),
+    NL("Gestopt bij stap {0} van {1}. Hervatten: spirula train --resume \"{2}\""),
+    RU("Остановлено на шаге {0} из {1}. Чтобы продолжить: spirula train --resume "
+       "\"{2}\""),
+    TR("{1} adımın {0}. adımında durduruldu. Devam etmek için: spirula train "
+       "--resume \"{2}\""));
 // ===========================================================================
 // `spirula mesh`
 // ===========================================================================
@@ -647,6 +726,22 @@ SS_MSG(error_line,
     RU("ошибка: {0}"),
     TR("hata: {0}"));
 
+// {0} is a URL.
+SS_MSG(details_line,
+    EN("Details: {0}"),
+    JA("詳細: {0}"),
+    ZH_HANS("详情：{0}"),
+    ZH_HANT("詳情：{0}"),
+    KO("자세한 내용: {0}"),
+    DE("Details: {0}"),
+    FR("Détails : {0}"),
+    ES("Detalles: {0}"),
+    PT("Detalhes: {0}"),
+    IT("Dettagli: {0}"),
+    NL("Details: {0}"),
+    RU("Подробности: {0}"),
+    TR("Ayrıntılar: {0}"));
+
 
 // ===========================================================================
 // `spirula sam` -- what a run says around its own work
@@ -699,6 +794,21 @@ SS_MSG(sam_unexpected_argument,
     NL("onverwacht argument: {0}"),
     RU("лишний аргумент: {0}"),
     TR("beklenmeyen argüman: {0}"));
+
+SS_MSG(sam_report_unwritable,
+    EN("cannot write the report {0}"),
+    JA("レポート {0} を書き込めません"),
+    ZH_HANS("无法写入报告 {0}"),
+    ZH_HANT("無法寫入報告 {0}"),
+    KO("보고서 {0}을(를) 쓸 수 없습니다"),
+    DE("der Bericht {0} kann nicht geschrieben werden"),
+    FR("impossible d’écrire le rapport {0}"),
+    ES("no se puede escribir el informe {0}"),
+    PT("não é possível gravar o relatório {0}"),
+    IT("impossibile scrivere il resoconto {0}"),
+    NL("het rapport {0} kan niet worden geschreven"),
+    RU("не удаётся записать отчёт {0}"),
+    TR("{0} raporu yazılamıyor"));
 
 SS_MSG(sam_no_devices,
     EN("no Vulkan devices were found -- is a driver installed?"),
@@ -849,47 +959,19 @@ SS_MSG(sam_track_summary,
        "yazma {5})"));
 
 SS_MSG(sam_no_video_decoder,
-    EN("this build has no in-process video decoder: it is compiled only with "
-       "-DSS_ENABLE_PATENTED=ON (see cmake/SsOptions.cmake). Use ffmpeg to "
-       "inspect a file or extract frames instead."),
-    JA("このビルドにはプロセス内の動画デコーダーがありません。"
-       "-DSS_ENABLE_PATENTED=ON でのみ組み込まれます（cmake/SsOptions.cmake 参照）。"
-       "ファイルの確認やフレームの取り出しには ffmpeg を使ってください。"),
-    ZH_HANS("本版本没有进程内视频解码器：它只在 -DSS_ENABLE_PATENTED=ON 时编译"
-            "（见 cmake/SsOptions.cmake）。请改用 ffmpeg 查看文件或提取帧。"),
-    ZH_HANT("本版本沒有行程內視訊解碼器：它只在 -DSS_ENABLE_PATENTED=ON 時編譯"
-            "（見 cmake/SsOptions.cmake）。請改用 ffmpeg 檢視檔案或擷取影格。"),
-    KO("이 빌드에는 프로세스 내 비디오 디코더가 없습니다: -DSS_ENABLE_PATENTED=ON "
-       "일 때만 컴파일됩니다(cmake/SsOptions.cmake 참고). 파일 확인이나 프레임 "
-       "추출에는 ffmpeg 을 쓰세요."),
-    DE("dieser Build hat keinen prozessinternen Videodekoder: er wird nur mit "
-       "-DSS_ENABLE_PATENTED=ON übersetzt (siehe cmake/SsOptions.cmake). "
-       "Nutzen Sie ffmpeg, um eine Datei zu prüfen oder Einzelbilder zu "
-       "entnehmen."),
-    FR("cette version n'a pas de décodeur vidéo intégré : il n'est compilé "
-       "qu'avec -DSS_ENABLE_PATENTED=ON (voir cmake/SsOptions.cmake). Utilisez "
-       "ffmpeg pour inspecter un fichier ou en extraire des images."),
-    ES("esta compilación no tiene descodificador de vídeo en el propio proceso: "
-       "solo se compila con -DSS_ENABLE_PATENTED=ON (mira "
-       "cmake/SsOptions.cmake). Usa ffmpeg para inspeccionar un archivo o "
-       "extraer fotogramas."),
-    PT("esta compilação não tem decodificador de vídeo no próprio processo: ele "
-       "só é compilado com -DSS_ENABLE_PATENTED=ON (veja "
-       "cmake/SsOptions.cmake). Use o ffmpeg para inspecionar um arquivo ou "
-       "extrair quadros."),
-    IT("questa build non ha un decodificatore video nel processo: viene "
-       "compilato solo con -DSS_ENABLE_PATENTED=ON (veda "
-       "cmake/SsOptions.cmake). Usi ffmpeg per ispezionare un file o estrarne i "
-       "fotogrammi."),
-    NL("deze build heeft geen videodecoder in het proces zelf: die wordt alleen "
-       "met -DSS_ENABLE_PATENTED=ON gecompileerd (zie cmake/SsOptions.cmake). "
-       "Gebruik ffmpeg om een bestand te bekijken of er beelden uit te halen."),
-    RU("в этой сборке нет внутрипроцессного видеодекодера: он собирается только "
-       "с -DSS_ENABLE_PATENTED=ON (см. cmake/SsOptions.cmake). Для просмотра "
-       "файла или извлечения кадров используйте ffmpeg."),
-    TR("bu derlemede süreç içi video çözücü yok: yalnızca "
-       "-DSS_ENABLE_PATENTED=ON ile derlenir (bkz. cmake/SsOptions.cmake). Bir "
-       "dosyayı incelemek ya da kare çıkarmak için ffmpeg kullanın."));
+    EN("No built-in video decoder. Use ffmpeg to inspect or extract frames, or build with -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    JA("内蔵動画デコーダーがありません。ffmpegで確認・抽出するか、-DSS_ENABLE_PATENTED=ON でビルドしてください（cmake/SsOptions.cmake）。"),
+    ZH_HANS("无内置视频解码器。用 ffmpeg 检查或提取帧，或以 -DSS_ENABLE_PATENTED=ON 构建（cmake/SsOptions.cmake）。"),
+    ZH_HANT("無內建影片解碼器。用 ffmpeg 檢查或擷取影格，或以 -DSS_ENABLE_PATENTED=ON 建置（cmake/SsOptions.cmake）。"),
+    KO("내장 동영상 디코더가 없습니다. ffmpeg로 확인/추출하거나 -DSS_ENABLE_PATENTED=ON으로 빌드하세요(cmake/SsOptions.cmake)."),
+    DE("Kein integrierter Videodecoder. ffmpeg zum Prüfen/Extrahieren nutzen oder mit -DSS_ENABLE_PATENTED=ON bauen (cmake/SsOptions.cmake)."),
+    FR("Pas de décodeur vidéo intégré. Inspecter/extraire via ffmpeg ou compiler avec -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    ES("Sin decodificador de vídeo integrado. Usa ffmpeg para inspeccionar/extraer o compila con -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    PT("Sem descodificador de vídeo interno. Use ffmpeg para inspecionar/extrair ou compile com -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    IT("Nessun decoder video integrato. Usa ffmpeg per ispezionare/estrarre o compila con -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    NL("Geen ingebouwde videodecoder. Gebruik ffmpeg voor inspectie/extractie of bouw met -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    RU("Нет встроенного видеодекодера. Используйте ffmpeg для просмотра/извлечения или соберите с -DSS_ENABLE_PATENTED=ON (cmake/SsOptions.cmake)."),
+    TR("Yerleşik video çözücü yok. İnceleme/çıkarma için ffmpeg kullanın veya -DSS_ENABLE_PATENTED=ON ile derleyin (cmake/SsOptions.cmake)."));
 
 SS_MSG(sam_video_decode,
     EN("Vulkan video decode: available"),
@@ -1165,6 +1247,101 @@ SS_MSG(sam_subject_no_prompt,
     RU("{0} сам выделяет главный объект; текстовые запросы и щелчки не учитываются"),
     TR("{0} ana özneyi kendiliğinden maskeler; metin istemleri ve tıklamalar yok "
        "sayılır"));
+
+// ===========================================================================
+// Licence consent at the terminal (nn/io/Fetch.cpp)
+// ===========================================================================
+// LEGAL: human review in every language, like the GUI's dialog. The typed word
+// stays 'yes' everywhere; a script sends it, so it is an identifier.
+
+// {0} is the licence's name.
+SS_MSG(license_ask_header,
+    EN("[license] {0} must be accepted before this model is used."),
+    JA("[license] このモデルを使う前に、{0} に同意する必要があります。"),
+    ZH_HANS("[license] 使用此模型之前，必须先接受 {0}。"),
+    ZH_HANT("[license] 使用此模型之前，必須先接受 {0}。"),
+    KO("[license] 이 모델을 사용하기 전에 {0}에 동의해야 합니다."),
+    DE("[license] {0} muss angenommen werden, bevor dieses Modell verwendet wird."),
+    FR("[license] {0} doit être acceptée avant d'utiliser ce modèle."),
+    ES("[license] Hay que aceptar {0} antes de usar este modelo."),
+    PT("[license] {0} precisa ser aceita antes de usar este modelo."),
+    IT("[license] {0} deve essere accettata prima di usare questo modello."),
+    NL("[license] {0} moet worden aanvaard voordat dit model wordt gebruikt."),
+    RU("[license] Перед использованием этой модели нужно принять {0}."),
+    TR("[license] Bu model kullanılmadan önce {0} kabul edilmelidir."));
+
+// {0} is the licence's name. Ends in a space: the answer is typed after it.
+SS_MSG(license_ask_confirm,
+    EN("Type 'yes' to confirm that you have read and accept the terms of {0}: "),
+    JA("{0} の条件を読み、同意することを確認するには 'yes' と入力してください: "),
+    ZH_HANS("请输入 'yes' 以确认您已阅读并接受 {0} 的条款: "),
+    ZH_HANT("請輸入 'yes' 以確認您已閱讀並接受 {0} 的條款: "),
+    KO("{0}의 조건을 읽었고 이에 동의함을 확인하려면 'yes'를 입력하세요: "),
+    DE("Geben Sie 'yes' ein, um zu bestätigen, dass Sie die Bedingungen von {0} gelesen haben und annehmen: "),
+    FR("Tapez 'yes' pour confirmer que vous avez lu et que vous acceptez les conditions de {0} : "),
+    ES("Escriba 'yes' para confirmar que ha leído y acepta los términos de {0}: "),
+    PT("Digite 'yes' para confirmar que leu e aceita os termos de {0}: "),
+    IT("Digiti 'yes' per confermare di aver letto e di accettare i termini di {0}: "),
+    NL("Typ 'yes' om te bevestigen dat u de voorwaarden van {0} hebt gelezen en aanvaardt: "),
+    RU("Введите 'yes', чтобы подтвердить, что вы прочитали условия {0} и принимаете их: "),
+    TR("{0} koşullarını okuduğunuzu ve kabul ettiğinizi onaylamak için 'yes' yazın: "));
+
+// {0} is the licence's name, {1} what was typed.
+SS_MSG(license_ask_declined,
+    EN("{0} was not accepted (answered '{1}'), so the model was not used."),
+    JA("{0} には同意されませんでした（入力: '{1}'）。モデルは使用していません。"),
+    ZH_HANS("未接受 {0}（输入: '{1}'），因此没有使用该模型。"),
+    ZH_HANT("未接受 {0}（輸入: '{1}'），因此沒有使用該模型。"),
+    KO("{0}에 동의하지 않았으므로(입력: '{1}') 모델을 사용하지 않았습니다."),
+    DE("{0} wurde nicht angenommen (Antwort: '{1}'), deshalb wurde das Modell nicht verwendet."),
+    FR("{0} n'a pas été acceptée (réponse : '{1}') ; le modèle n'a donc pas été utilisé."),
+    ES("No se aceptó {0} (respuesta: '{1}'), así que no se usó el modelo."),
+    PT("{0} não foi aceita (resposta: '{1}'), então o modelo não foi usado."),
+    IT("{0} non è stata accettata (risposta: '{1}'), quindi il modello non è stato usato."),
+    NL("{0} is niet aanvaard (antwoord: '{1}'), dus het model is niet gebruikt."),
+    RU("{0} не принята (ответ: '{1}'), поэтому модель не использовалась."),
+    TR("{0} kabul edilmedi (yanıt: '{1}'), bu yüzden model kullanılmadı."));
+
+// {0} is the licence's name, {1} its URL, {2} the family to pass to --accept-license.
+// The flag and `=yes` are identifiers and stay as typed.
+SS_MSG(license_no_terminal,
+    EN("Licence '{0}' not accepted: cannot download/load. No terminal available.\n- Read {1}, then pass --accept-license {2}=yes.\n- Or accept in the app’s download dialog. Without =yes a terminal is required."),
+    JA("ライセンス '{0}' が未同意で、ダウンロード・読み込み不可。確認用端末もありません。\n- {1} を読み、--accept-license {2}=yes を指定してください。\n- アプリのダウンロード画面でも同意できます。=yes なしは端末が必要です。"),
+    ZH_HANS("尚未接受许可 '{0}'，无法下载/加载，也没有可用终端。\n- 阅读 {1}，然后传入 --accept-license {2}=yes。\n- 也可在应用下载对话框中接受。不带 =yes 时需要终端。"),
+    ZH_HANT("尚未接受授權 '{0}'，無法下載/載入，也沒有可用終端機。\n- 閱讀 {1}，然後傳入 --accept-license {2}=yes。\n- 也可在應用程式下載對話框中接受。不帶 =yes 時需要終端機。"),
+    KO("라이선스 '{0}' 미동의: 다운로드/로드 불가. 사용 가능한 터미널도 없습니다.\n- {1}을 읽은 뒤 --accept-license {2}=yes를 지정하세요.\n- 앱 다운로드 창에서도 동의할 수 있습니다. =yes가 없으면 터미널이 필요합니다."),
+    DE("Lizenz '{0}' nicht angenommen: kein Download/Laden. Kein Terminal verfügbar.\n- {1} lesen, dann --accept-license {2}=yes angeben.\n- Oder im Download-Dialog zustimmen. Ohne =yes ist ein Terminal nötig."),
+    FR("Licence '{0}' non acceptée : téléchargement/chargement impossible. Aucun terminal.\n- Lire {1}, puis passer --accept-license {2}=yes.\n- Ou accepter dans le dialogue de téléchargement. Sans =yes, un terminal est requis."),
+    ES("Licencia '{0}' no aceptada: no se puede descargar/cargar. No hay terminal.\n- Lee {1} y pasa --accept-license {2}=yes.\n- O acepta en el diálogo de descarga. Sin =yes se necesita terminal."),
+    PT("Licença '{0}' não aceite: não pode descarregar/carregar. Sem terminal disponível.\n- Leia {1} e passe --accept-license {2}=yes.\n- Ou aceite no diálogo de transferência. Sem =yes é necessário um terminal."),
+    IT("Licenza '{0}' non accettata: download/caricamento impossibile. Nessun terminale.\n- Leggi {1}, poi passa --accept-license {2}=yes.\n- Oppure accetta nel dialogo di download. Senza =yes serve un terminale."),
+    NL("Licentie '{0}' niet aanvaard: downloaden/laden niet mogelijk. Geen terminal beschikbaar.\n- Lees {1} en geef --accept-license {2}=yes mee.\n- Of aanvaard in het downloadvenster. Zonder =yes is een terminal vereist."),
+    RU("Лицензия '{0}' не принята: скачивание/загрузка запрещены. Терминал недоступен.\n- Прочтите {1}, затем укажите --accept-license {2}=yes.\n- Или примите в окне загрузки приложения. Без =yes нужен терминал."),
+    TR("'{0}' lisansı kabul edilmedi: indirme/yükleme yapılamaz. Terminal yok.\n- {1} koşullarını okuyup --accept-license {2}=yes verin.\n- Ya da uygulamanın indirme penceresinde kabul edin. =yes olmadan terminal gerekir."));
+
+SS_MSG(license_no_home,
+    EN("(Neither XDG_CONFIG_HOME nor HOME is set, so no acceptance can be read or "
+       "recorded.)"),
+    JA("（XDG_CONFIG_HOME も HOME も設定されていないため、同意の読み取りも記録もできません。）"),
+    ZH_HANS("（XDG_CONFIG_HOME 和 HOME 均未设置，因此无法读取或记录任何接受状态。）"),
+    ZH_HANT("（XDG_CONFIG_HOME 和 HOME 均未設定，因此無法讀取或記錄任何接受狀態。）"),
+    KO("(XDG_CONFIG_HOME도 HOME도 설정되어 있지 않아 동의 여부를 읽거나 기록할 수 없습니다.)"),
+    DE("(Weder XDG_CONFIG_HOME noch HOME ist gesetzt, daher lässt sich keine Annahme lesen "
+       "oder speichern.)"),
+    FR("(Ni XDG_CONFIG_HOME ni HOME n'est défini : aucune acceptation ne peut être lue ni "
+       "enregistrée.)"),
+    ES("(No están definidos ni XDG_CONFIG_HOME ni HOME, así que no se puede leer ni "
+       "registrar ninguna aceptación.)"),
+    PT("(Nem XDG_CONFIG_HOME nem HOME estão definidos, então nenhuma aceitação pode ser "
+       "lida ou registrada.)"),
+    IT("(Non sono impostati né XDG_CONFIG_HOME né HOME, quindi nessuna accettazione può "
+       "essere letta o registrata.)"),
+    NL("(Noch XDG_CONFIG_HOME noch HOME is ingesteld, dus er kan geen aanvaarding worden "
+       "gelezen of vastgelegd.)"),
+    RU("(Не заданы ни XDG_CONFIG_HOME, ни HOME, поэтому согласие нельзя ни прочитать, ни "
+       "записать.)"),
+    TR("(Ne XDG_CONFIG_HOME ne de HOME ayarlı, bu yüzden hiçbir kabul okunamaz veya "
+       "kaydedilemez.)"));
 
 }  // namespace cli
 }  // namespace msg

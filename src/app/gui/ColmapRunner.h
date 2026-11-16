@@ -11,6 +11,7 @@
 // PhotoImport::InPlace records nothing in the workspace, so re-opening such a
 // dataset means setting data.image_dir in the dataparser options by hand.
 
+#include "app/gui/DatasetPlan.h"
 #include "app/gui/DatasetPrep.h"   // MaskClick
 #include "app/gui/FilmReel.h"
 #include "app/gui/GeometryRunner.h"
@@ -67,12 +68,7 @@ struct ColmapJob {
     std::string ffmpeg_exe = "ffmpeg";
     bool force_external_decode = false;  // ffmpeg even when we could decode
 
-    // Steps a re-run redoes rather than reuses; see PrepJob.
-    bool redo_frames = false;
-    bool redo_masks = false;
-    bool redo_model = false;             // reconstruct again over existing
-                                         // frames, masks and features
-    bool settings_built_model = false;   // see SfmJob
+    PlanRequest request;                 // see SfmJob
     bool mask_features = true;           // ... and so is this
     PhotoImport photo_import = PhotoImport::ConvertJpeg;  // see PrepJob
 
@@ -80,6 +76,7 @@ struct ColmapJob {
     // COLMAP does not read it, so its routing remains a separate compatibility
     // tail.
     std::string device;
+    std::string inference_devices;
 
     // Cameras
     std::string camera_model = "OPENCV"; // ImageReader.camera_model
@@ -111,6 +108,13 @@ struct ColmapJob {
     bool gps_spacing = false;
     float gps_spacing_m = 5.0f;
     int sharp_window = 3;                // pick sharpest of N candidates (1 = off)
+    bool skip_blurry = false;
+    float blur_px = 8.0f;
+    bool blur_neighbour = true;
+    int similar_bits = 0;
+    bool keep_skipped = true;
+    bool sync_tracks = true;
+    bool auto_rotate = true;
     app::Pano360Options pano;            // see PrepJob
     int max_frames = 100000;
 
@@ -171,11 +175,13 @@ struct ColmapJob {
     // The photographs' colour space; masking and geometry convert to sRGB.
     std::string image_gamut;
     std::optional<bool> image_is_linear;
+    std::string image_exposure;
 
     // Depth and normals, written after the reconstruction from the dataset it
     // produced. Shared with the built-in path (SfmJob), which runs the same
     // child over the same folder.
     GeometryJob geometry;
+    DenseJob dense;
 };
 
 class ColmapRunner {
@@ -198,11 +204,15 @@ public:
     std::string mask_dir();              // mask_dir to train with ("" = none)
     bool mask_flipped() const;           // ... and are they white where REMOVED?
 
+    // What preparation is handed, so the panel plans from the same job.
+    static PrepJob prep_job(const ColmapJob& job);
+
 private:
     void run(ColmapJob job);
     void take_reconstruction(ColmapJob& job);
     void take_masking(PrepJob& prep);
     void take_geometry(ColmapJob& job);
+    void take_dense(ColmapJob& job);
     void log(const std::string& line, bool detail = true);
     int  exec(const std::vector<std::string>& argv);
     void set_stage(Stage st, const std::string& s);

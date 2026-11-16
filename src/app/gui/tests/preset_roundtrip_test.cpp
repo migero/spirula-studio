@@ -10,6 +10,7 @@
 #include "app/gui/DatasetPreset.h"
 #include "app/gui/MeshPreset.h"
 #include "core/SourcePath.h"
+#include "dense/ConfigFields.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -62,6 +63,12 @@ static void test_dataset_preset() {
     s.sfm.prep.adaptive_fps = true;
     s.sfm.prep.adaptive_range = 2.5f;
     s.sfm.prep.sharp_window = 7;
+    s.sfm.prep.skip_blurry = true;
+    s.sfm.prep.blur_px = 12.5f;
+    s.sfm.prep.blur_neighbour = false;
+    s.sfm.prep.similar_bits = 9;
+    s.sfm.prep.blur_review = true;
+    s.sfm.prep.keep_skipped = false;
     s.sfm.prep.sync_tracks = false;
     s.sfm.prep.max_frames = 1234;
     s.sfm.prep.auto_rotate = false;
@@ -74,6 +81,7 @@ static void test_dataset_preset() {
 
     s.sfm.image_gamut = "Display P3";
     s.sfm.image_is_linear = true;
+    s.sfm.image_exposure = "auto";
     s.sfm.point_color_in_image_space = true;
 
     s.sfm.prep.mask_enable = true;
@@ -98,6 +106,27 @@ static void test_dataset_preset() {
     s.sfm.prep.mask_merge_cos = 0.9f;
 
     s.sfm.geometry.enable = true;
+    s.sfm.dense.enable = true;
+    s.sfm.dense.use_for_training = false;
+    s.sfm.dense.config.apply_preset("fast");
+    s.sfm.dense.config.pairs.reference_coverage = 7;
+    s.sfm.dense.config.geometry.min_source_images = 2;
+    s.sfm.dense.config.min_overlap = 0.73;
+    s.sfm.dense.config.match.memory_budget_bytes = 3456789012ull;
+    s.sfm.dense.config.match.precision = spirula::roma::InferencePrecision::Mixed;
+    s.sfm.dense.config.use_masks = false;
+    s.sfm.dense.config.sparse_face_pairs = false;
+    s.sfm.dense.config.matching_space = "source";
+    s.sfm.dense.config.reference_fraction = 0.63;
+    s.sfm.dense.config.samples_per_reference = 12345;
+    s.sfm.dense.config.sampling_seed = 72;
+    s.sfm.dense.config.source_reprojection_error = 0.075;
+    s.sfm.dense.config.two_image_points = "auto";
+    s.sfm.dense.config.free_space_test = false;
+    s.sfm.dense.config.far_isolated = false;
+    s.sfm.dense.config.reprojection_check = true;
+    s.sfm.dense.config.max_depth_error_per_cell = 0.05;
+    s.sfm.dense.config.max_baseline = 0;
     s.sfm.geometry.model = "moge2-vitl";
     s.sfm.geometry.max_size = 800;
     s.sfm.geometry.num_tokens = 2400;
@@ -117,7 +146,6 @@ static void test_dataset_preset() {
     s.sfm.pairs = 3;
     s.sfm.overlap = 25;
     s.sfm.loop_closure = false;
-    s.sfm.use_sequence = false;
     s.sfm.init_focal_px = 1500.0f;
     s.sfm.init_distortion = "0.1,0.02";
     s.sfm.distortion_refine = 2;
@@ -126,7 +154,7 @@ static void test_dataset_preset() {
     s.sfm.max_features = 8192;
     s.sfm.max_image_size = 2000;
     s.sfm.mapper = 1;
-    s.sfm.features = 1;
+    s.sfm.features = (int)std::size(gui::kSfmFeatures) - 1;
     s.sfm.matcher = 1;
     s.sfm.metric_gps = 2;
     s.sfm.sensor_gauge = 1;
@@ -184,6 +212,12 @@ static void test_dataset_preset() {
     CHECK_EQ(b.sfm.prep.adaptive_fps, s.sfm.prep.adaptive_fps);
     CHECK_EQ(b.sfm.prep.adaptive_range, s.sfm.prep.adaptive_range);
     CHECK_EQ(b.sfm.prep.sharp_window, s.sfm.prep.sharp_window);
+    CHECK_EQ(b.sfm.prep.skip_blurry, s.sfm.prep.skip_blurry);
+    CHECK_EQ(b.sfm.prep.blur_px, s.sfm.prep.blur_px);
+    CHECK_EQ(b.sfm.prep.blur_neighbour, s.sfm.prep.blur_neighbour);
+    CHECK_EQ(b.sfm.prep.similar_bits, s.sfm.prep.similar_bits);
+    CHECK_EQ(b.sfm.prep.blur_review, s.sfm.prep.blur_review);
+    CHECK_EQ(b.sfm.prep.keep_skipped, s.sfm.prep.keep_skipped);
     CHECK_EQ(b.sfm.prep.sync_tracks, s.sfm.prep.sync_tracks);
     CHECK_EQ(b.sfm.prep.max_frames, s.sfm.prep.max_frames);
     CHECK_EQ(b.sfm.prep.auto_rotate, s.sfm.prep.auto_rotate);
@@ -196,6 +230,7 @@ static void test_dataset_preset() {
 
     CHECK_EQ(b.sfm.image_gamut, s.sfm.image_gamut);
     CHECK(b.sfm.image_is_linear == s.sfm.image_is_linear);
+    CHECK(b.sfm.image_exposure == s.sfm.image_exposure);
     CHECK_EQ(b.sfm.point_color_in_image_space, s.sfm.point_color_in_image_space);
 
     CHECK_EQ(b.sfm.prep.mask_enable, s.sfm.prep.mask_enable);
@@ -218,6 +253,10 @@ static void test_dataset_preset() {
     CHECK_EQ(b.sfm.prep.mask_merge_cos, s.sfm.prep.mask_merge_cos);
 
     CHECK_EQ(b.sfm.geometry.enable, s.sfm.geometry.enable);
+    CHECK_EQ(b.sfm.dense.enable, s.sfm.dense.enable);
+    CHECK_EQ(b.sfm.dense.use_for_training, s.sfm.dense.use_for_training);
+    CHECK_EQ(spirula::dense::config_json(b.sfm.dense.config), spirula::dense::config_json(s.sfm.dense.config));
+    CHECK_EQ(spirula::dense::config_json(b.colmap.dense.config), spirula::dense::config_json(s.sfm.dense.config));
     CHECK_EQ(b.sfm.geometry.model, s.sfm.geometry.model);
     CHECK_EQ(b.sfm.geometry.max_size, s.sfm.geometry.max_size);
     CHECK_EQ(b.sfm.geometry.num_tokens, s.sfm.geometry.num_tokens);
@@ -237,7 +276,6 @@ static void test_dataset_preset() {
     CHECK_EQ(b.sfm.pairs, s.sfm.pairs);
     CHECK_EQ(b.sfm.overlap, s.sfm.overlap);
     CHECK_EQ(b.sfm.loop_closure, s.sfm.loop_closure);
-    CHECK_EQ(b.sfm.use_sequence, s.sfm.use_sequence);
     CHECK_EQ(b.sfm.init_focal_px, s.sfm.init_focal_px);
     CHECK_EQ(b.sfm.init_distortion, s.sfm.init_distortion);
     CHECK_EQ(b.sfm.distortion_refine, s.sfm.distortion_refine);
@@ -404,6 +442,19 @@ static void test_unknown_key_ignored() {
     } catch (const std::exception&) {
         CHECK(!"a preset with an unknown key must load");
     }
+
+    // ... and so is one inside the nested dense settings, which a dataset's
+    // record also carries: a crash on opening the dataset otherwise.
+    try {
+        gui::DatasetSettings s;
+        gui::read_dataset_settings_json(
+            json_parse("{\"dense_config\": {\"preset\": \"fast\", \"source\": \"depth\", "
+                       "\"depth_step\": 2, \"neighbors\": 5}}"),
+            s);
+        CHECK_EQ(s.sfm.dense.config.pairs.neighbors, 5);
+    } catch (const std::exception&) {
+        CHECK(!"dense settings with a retired key must load");
+    }
 }
 
 // A preset of one kind must not load as another, whatever its name is.
@@ -426,11 +477,45 @@ static void test_kinds_do_not_cross() {
     CHECK(threw);
 }
 
+static void test_dense_draft_restore() {
+    gui::DatasetPreset saved;
+    saved.name = "Dense draft";
+    saved.s.sfm.dense.enable = true;
+    auto& config = saved.s.sfm.dense.config;
+    config.apply_preset("fast");
+    config.pairs.neighbors = 1;
+    config.geometry.min_source_images = 3;
+    config.stride = 2;
+    config.use_masks = true;
+    const auto expected = spirula::dense::config_json(config);
+    try {
+        gui::DatasetSettings restored;
+        gui::read_dataset_settings_json(json_parse(gui::dataset_settings_json(saved.s)), restored);
+        CHECK_EQ(spirula::dense::config_json(restored.sfm.dense.config), expected);
+        CHECK_EQ(spirula::dense::config_json(restored.colmap.dense.config), expected);
+        CHECK(restored.sfm.dense.enable);
+        const auto path = (scratch() / "dense_draft.json").string();
+        gui::save_dataset_preset(saved, path);
+        const auto loaded = gui::load_dataset_preset(path);
+        CHECK_EQ(spirula::dense::config_json(loaded.s.sfm.dense.config), expected);
+        bool rejected = false;
+        try { loaded.s.sfm.dense.config.validate_run(); }
+        catch (const std::exception&) { rejected = true; }
+        CHECK(rejected);
+        restored.sfm.dense.config.pairs.neighbors = 2;
+        restored.sfm.dense.config.validate_run();
+    } catch (const std::exception& e) {
+        std::printf("FAIL dense draft restore: %s\n", e.what());
+        failures++;
+    }
+}
+
 int main() {
     test_dataset_preset();
     test_mesh_preset();
     test_sanitize();
     test_unknown_key_ignored();
+    test_dense_draft_restore();
     test_kinds_do_not_cross();
     if (failures) {
         std::printf("preset_roundtrip_test: %d failure(s)\n", failures);

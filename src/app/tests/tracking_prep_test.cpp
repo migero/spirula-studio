@@ -1,5 +1,4 @@
 #include "app/gui/DatasetPrep.h"
-#include "app/gui/ReconStamp.h"
 #include <filesystem>
 #include <iostream>
 #include <atomic>
@@ -28,7 +27,12 @@ int main(int argc,char** argv){
    ++views;
   }
  }
- gui::write_recon_stamp(job.workspace,gui::frames_stamp(job),gui::kFramesStampFile);
+ std::string rec_err;gui::snapshot_frame_sources(job,rec_err);
+ gui::DatasetRecord rec;rec.present=true;
+ gui::StepRecord& frames=rec.steps[(int)gui::Step::Frames];
+ frames.present=frames.complete=true;frames.id="test";
+ frames.fields.push_back({"source_content",job.inputs[0].subdir.empty()?".":job.inputs[0].subdir,job.source_content[0]});
+ gui::write_step_record(job.workspace,gui::Step::Frames,frames);
  std::atomic<bool> cancel{false};gui::RunProgress progress;gui::DatasetPrep prep(&progress,gui::RunFilms{},cancel);gui::PrepResult result;std::string error;
  bool ok=prep.run(job,result,error);
  for(auto line:progress.drain())std::cout<<line.text<<'\n';

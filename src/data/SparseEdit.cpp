@@ -1,5 +1,6 @@
 // SparseEdit.cpp -- see SparseEdit.h.
 
+#include "core/BufferedFile.h"
 #include "data/SparseEdit.h"
 
 #include "data/DatasetParser.h"
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -23,7 +25,7 @@ namespace spirula {
 namespace {
 
 std::string read_file(const fs::path& p) {
-    std::ifstream f(p, std::ios::binary);
+    BufferedInputFile f(p, std::ios::binary);
     if (!f) throw std::runtime_error("cannot read " + p.string());
     return std::string((std::istreambuf_iterator<char>(f)),
                        std::istreambuf_iterator<char>());
@@ -539,7 +541,7 @@ SparseFormat sparse_format_of(const std::string& dataset_dir) {
          !ec && it != end; it.increment(ec)) {
         std::string e = it->path().extension().string();
         for (char& c : e) c = (char)std::tolower((unsigned char)c);
-        if (e == ".xml") return SparseFormat::Metashape;
+        if (e == ".xml" || e == ".psx") return SparseFormat::Metashape;
     }
     return SparseFormat::None;
 }
@@ -649,7 +651,7 @@ SparseStats read_sparse_stats(const std::string& dataset_dir) {
 
     // The text model: images.txt is two lines a record, points3D.txt one.
     {
-        std::ifstream f(fs::path(model) / "images.txt");
+        BufferedInputFile f(fs::path(model) / "images.txt");
         std::string line, obs;
         while (std::getline(f, line)) {
             if (line.empty() || line[0] == '#') continue;
@@ -681,7 +683,7 @@ SparseStats read_sparse_stats(const std::string& dataset_dir) {
             out.image_points.push_back(seen);
         }
     }
-    std::ifstream f(fs::path(model) / "points3D.txt");
+    BufferedInputFile f(fs::path(model) / "points3D.txt");
     std::string line;
     out.track_beg.push_back(0);
     while (std::getline(f, line)) {
@@ -711,56 +713,72 @@ SparseStats read_sparse_stats(const std::string& dataset_dir) {
     return out;
 }
 
-void write_ply_points(const std::string& path, const double* xyz,
-                      const uint8_t* rgb, int64_t n, const uint8_t* keep,
-                      const Sim3* moved, const ColmapPoints3D* add) {
-    int64_t kept = n;
-    if (keep) {
-        kept = 0;
-        for (int64_t i = 0; i < n; i++) kept += keep[i] ? 1 : 0;
-    }
-    if (add) kept += add->num();
+PointCloudWriter::PointCloudWriter(const std::string& path, PlyCoordinates coordinates)
+    : path_(path), coordinates_(coordinates) {
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("cannot write " + path);
+    file_.open(path, std::ios::binary | std::ios::out | std::ios::in | std::ios::trunc);
+    auto& f = file_;
+    if (!f) throw std::runtime_error("cannot write " + path_);
     f << "ply\nformat binary_little_endian 1.0\n";
-    f << "element vertex " << kept << "\n";
-    f << "property float x\nproperty float y\nproperty float z\n";
+    f << "element vertex ";
+    count_position_ = f.tellp();
+    f << "00000000000000000000\n";
+    const char* type = coordinates == PlyCoordinates::Float64 ? "double" : "float";
+    f << "property " << type << " x\nproperty " << type << " y\nproperty " << type << " z\n";
     f << "property uchar red\nproperty uchar green\nproperty uchar blue\n";
     f << "end_header\n";
+}
+
+void PointCloudWriter::append(const double xyz[3], const uint8_t rgb[3]) {
+    if (finished_) throw std::runtime_error("point cloud writer is finished");
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(xyz[i])) throw std::runtime_error("nonfinite point in " + path_);
+    if (coordinates_ == PlyCoordinates::Float64)
+        file_.write(reinterpret_cast<const char*>(xyz), 3 * sizeof(double));
+    else {
+        const float p[3] = {(float)xyz[0], (float)xyz[1], (float)xyz[2]};
+        for (float v : p) if (!std::isfinite(v)) throw std::runtime_error("point exceeds float range in " + path_);
+        file_.write(reinterpret_cast<const char*>(p), sizeof p);
+    }
+    const uint8_t fallback[3] = {200, 200, 200};
+    file_.write(reinterpret_cast<const char*>(rgb ? rgb : fallback), 3);
+    if (!file_) throw std::runtime_error("write failed: " + path_);
+    ++count_;
+}
+
+void PointCloudWriter::finish() {
+    if (finished_) return;
+    std::string count = std::to_string(count_);
+    file_.seekp(count_position_);
+    file_ << std::string(20 - count.size(), '0') << count;
+    file_.flush();
+    if (!file_) throw std::runtime_error("write failed: " + path_);
+    file_.close();
+    finished_ = true;
+}
+
+void write_ply_points(const std::string& path, const double* xyz,
+                      const uint8_t* rgb, int64_t n, const uint8_t* keep,
+                      const Sim3* moved, PlyCoordinates coordinates,
+                      const ColmapPoints3D* add) {
+    if (n < 0 || (n > 0 && !xyz)) throw std::runtime_error("invalid point cloud for " + path);
+    PointCloudWriter writer(path, coordinates);
     for (int64_t i = 0; i < n; i++) {
         if (keep && !keep[i]) continue;
         double q[3] = {xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]};
         if (moved) moved->apply(&xyz[i * 3], q);
-        const float p[3] = {(float)q[0], (float)q[1], (float)q[2]};
-        f.write(reinterpret_cast<const char*>(p), sizeof p);
-        const uint8_t c[3] = {rgb ? rgb[i * 3] : (uint8_t)200,
-                              rgb ? rgb[i * 3 + 1] : (uint8_t)200,
-                              rgb ? rgb[i * 3 + 2] : (uint8_t)200};
-        f.write(reinterpret_cast<const char*>(c), sizeof c);
+        writer.append(q, rgb ? &rgb[i * 3] : nullptr);
     }
     if (add) {
         for (int64_t i = 0; i < add->num(); i++) {
             double q[3] = {add->xyz[(size_t)i * 3], add->xyz[(size_t)i * 3 + 1],
                            add->xyz[(size_t)i * 3 + 2]};
-            if (moved) {
-                double o[3];
-                moved->apply(&add->xyz[(size_t)i * 3], o);
-                q[0] = o[0]; q[1] = o[1]; q[2] = o[2];
-            }
-            const float p[3] = {(float)q[0], (float)q[1], (float)q[2]};
-            f.write(reinterpret_cast<const char*>(p), sizeof p);
-            const uint8_t* rc = add->rgb.empty() ? nullptr
-                                                : &add->rgb[(size_t)i * 3];
-            const uint8_t c[3] = {rc ? rc[0] : (uint8_t)200,
-                                  rc ? rc[1] : (uint8_t)200,
-                                  rc ? rc[2] : (uint8_t)200};
-            f.write(reinterpret_cast<const char*>(c), sizeof c);
+            if (moved) moved->apply(&add->xyz[(size_t)i * 3], q);
+            writer.append(q, add->rgb.empty() ? nullptr : &add->rgb[(size_t)i * 3]);
         }
     }
-    f.flush();
-    if (!f) throw std::runtime_error("write failed: " + path);
+    writer.finish();
 }
 
 
@@ -793,8 +811,11 @@ SparseBaseline load_baseline(const std::string& dataset_dir) {
         }
         case SparseFormat::Metashape: {
             DatasetParserConfig cfg;
-            const JsonValue meta = metashape_meta(dataset_dir, cfg);
-            b.cloud = read_points_of(dataset_dir, nerf_ply_rel(meta));
+            ColmapPoints3D psx_points;
+            const JsonValue meta = metashape_meta(dataset_dir, cfg, &psx_points);
+            const std::string ply_rel = nerf_ply_rel(meta);
+            b.cloud = ply_rel.empty() ? std::move(psx_points)
+                                      : read_points_of(dataset_dir, ply_rel);
             JsonWriter w;
             json_write(w, meta);
             b.meta = w.str();
@@ -871,7 +892,8 @@ std::vector<std::string> sparse_write_filtered(const std::string& dataset_dir,
             write_ply_points(ply.string(), b.cloud.xyz.data(),
                              b.cloud.rgb.empty() ? nullptr : b.cloud.rgb.data(),
                              b.cloud.num(), keep.points.data(),
-                             moved ? &in_json : nullptr, &keep.append);
+                             moved ? &in_json : nullptr,
+                             PlyCoordinates::Float32, &keep.append);
             written.push_back(ply.string());
             drop_frames(meta, drop);
             if (moved) move_frames(meta, in_json);
@@ -896,6 +918,18 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
                                            const SparseKeep& keep,
                                            const Sim3* moved,
                                            SparseBaseline* loaded) {
+    std::error_code ec;
+    const fs::path sparse = fs::path(out_dir) / "sparse";
+    if (fs::exists(sparse, ec))
+        throw std::runtime_error(sparse.string() + " already exists");
+    return sparse_write_model(dataset_dir, (sparse / "0").string(), keep, moved, loaded);
+}
+
+std::vector<std::string> sparse_write_model(const std::string& dataset_dir,
+                                            const std::string& model_dir,
+                                            const SparseKeep& keep,
+                                            const Sim3* moved,
+                                            SparseBaseline* loaded) {
     SparseBaseline local;
     if (!loaded) loaded = &local;
     if (!loaded->loaded()) *loaded = load_baseline(dataset_dir);
@@ -903,10 +937,9 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
     if (base.format != SparseFormat::Colmap)
         throw std::runtime_error("only a COLMAP reconstruction can be saved as a copy");
     std::error_code ec;
-    const fs::path sparse = fs::path(out_dir) / "sparse";
-    if (fs::exists(sparse, ec))
-        throw std::runtime_error(sparse.string() + " already exists");
-    const fs::path model = sparse / "0";
+    const fs::path model(model_dir);
+    if (fs::exists(model, ec) && !fs::is_empty(model, ec))
+        throw std::runtime_error(model.string() + " already exists");
     fs::create_directories(model, ec);
     if (ec) throw std::runtime_error("cannot create " + model.string());
     const std::string ext = base.text ? ".txt" : ".bin";
@@ -925,7 +958,7 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
     }
     SparseBaseline b = base;
     b.model_dir = model.string();
-    std::vector<std::string> written = sparse_write_filtered(out_dir, keep, moved, &b);
+    std::vector<std::string> written = sparse_write_filtered(model_dir, keep, moved, &b);
     // Only what the edit changed was written; the rest is the model as found.
     if (!fs::exists(images, ec)) write_file(images, b.images);
     if (!b.frames.empty() && !fs::exists(frames, ec)) write_file(frames, b.frames);

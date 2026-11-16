@@ -22,7 +22,8 @@ namespace gui {
 std::string default_lens(const PrepInput& s);
 
 // A packed video's lenses, from its frame size: two start as a rig of their own.
-void set_packed_lenses(PrepInput& s, int width, int height);
+// `unstitched` (app::kandao_unstitched) is a file its extension does not give away.
+void set_packed_lenses(PrepInput& s, int width, int height, bool unstitched);
 
 // One picked path -> the input it describes, with the defaults its kind wants.
 // A folder resolves to the images/ under it and the masks beside them, which
@@ -51,8 +52,14 @@ void guess_source_rigs(std::vector<PrepInput>& sources, bool force);
 // itself (a picked images/ has its reconstruction written beside it) rather
 // than a fresh one to be created next to the input.
 std::string default_workspace(const std::vector<PrepInput>& sources);
+// Is `ws` one default_workspace() gives these inputs -- the folder itself or
+// one of its _2, _3 -- whatever it holds by now?
+bool workspace_named_by(const std::vector<PrepInput>& sources, const std::string& ws);
 
 bool any_pano360(const std::vector<PrepInput>& sources);
+// `fallback` is the dataset-wide model, as camera_group_models takes it.
+bool any_fisheye_or_pano_lens(const std::vector<PrepInput>& sources,
+                              const std::string& fallback);
 void reset_pano_size(const std::vector<PrepInput>& sources,
                      app::Pano360Options& pano);
 
@@ -79,6 +86,10 @@ void normalize_source_lenses(std::vector<PrepInput>& sources,
 // because that is what a preset saves and what every batch item starts from.
 void normalize_source_fps(std::vector<PrepInput>& sources, float& video_fps);
 
+// And the LUT: a row choosing what automatic would give it anyway goes back to
+// automatic, so it keeps following the rows above it.
+void normalize_source_luts(std::vector<PrepInput>& sources);
+
 // One lens for the whole capture, written to every input rather than only the
 // first -- the single "Camera / lens" control speaks for all of them.
 void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
@@ -89,8 +100,14 @@ void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
 void apply_pano_lens(std::vector<PrepInput>& sources, SfmJob& sfm,
                      ColmapJob& colmap);
 
-// The reconstruction settings the LIST decides: a video is a capture in order,
-// a dual-lens file is a rig, a 360 file is one camera warped into views. Run
+// What the first input's Sequential switch decides: a video handed over in
+// order is captured as one (temporal pairing); anything else pairs by content.
+// Run when that switch moves; "internet" and the vocabulary tree are left be.
+void apply_capture_order(const std::vector<PrepInput>& sources, SfmJob& sfm,
+                         ColmapJob& colmap);
+
+// The reconstruction settings the LIST decides: the capture order above, a
+// dual-lens file is a rig, a 360 file is one camera warped into views. Run
 // when the list changes, before any preset is applied over it.
 void apply_capture_defaults(std::vector<PrepInput>& sources, SfmJob& sfm,
                             ColmapJob& colmap);

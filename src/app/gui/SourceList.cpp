@@ -1,6 +1,7 @@
 // SourceList.cpp -- see SourceList.h.
 
 #include "app/gui/SourceList.h"
+#include "app/LogLuts.h"
 #include "app/gui/RigGuess.h"
 
 #include <algorithm>
@@ -97,12 +98,17 @@ std::string default_lens(const PrepInput& s) {
 }
 
 
-void set_packed_lenses(PrepInput& s, int width, int height) {
-    if (!is_packed_lens_path(s.path) || s.packed_lenses > 0 || width <= 0 ||
-        height <= 0)
-        return;
+void set_packed_lenses(PrepInput& s, int width, int height, bool unstitched) {
+    if (s.packed_lenses > 0 || width <= 0 || height <= 0) return;
     bool exact = false;
-    s.packed_lenses = app::packed_lens_count(width, height, exact);
+    const int lenses = app::packed_lens_count(width, height, exact);
+    if (is_packed_lens_path(s.path)) {
+        s.packed_lenses = lenses;
+    } else if (unstitched && lenses >= 2) {
+        // Not known by its name, so make_source gave it a flat lens.
+        s.packed_lenses = lenses;
+        s.camera_model = default_lens(s);
+    }
     if (s.packed_lenses >= 2) s.rig = kRigOwn;
 }
 
@@ -119,6 +125,7 @@ PrepInput make_source(const std::string& path, bool use_found_masks) {
         if (!use_found_masks) s.mask_dir.clear();
         s.packed_lenses = probe_packed_lenses(s.path);
         if (s.packed_lenses >= 2) s.rig = kRigOwn;
+        s.heif = folder_has_heif(s.path);
     }
     s.camera_model = default_lens(s);
     return s;
@@ -145,10 +152,14 @@ void probe_sources(std::vector<PrepInput>& sources,
     }
     for (PrepInput& s : sources) {
         int w = 0, h = 0;
-        if (s.is_video && s.packed_lenses == 0 && is_packed_lens_path(s.path) &&
-            source_pixel_size(s, ffmpeg_exe, w, h))
-            set_packed_lenses(s, w, h);
+        if (!s.is_video || s.packed_lenses != 0) continue;
+        const bool kandao = s.video_tracks == 1 && app::kandao_recording(s.path);
+        if ((kandao || is_packed_lens_path(s.path)) && source_pixel_size(s, ffmpeg_exe, w, h))
+            set_packed_lenses(s, w, h, kandao && app::kandao_unstitched(s.path, w, h));
     }
+    for (PrepInput& s : sources)
+        if (s.is_video) s.lut_detected = app::detect_log_lut(s.path);
+    normalize_source_luts(sources);
 }
 
 
@@ -251,22 +262,25 @@ void guess_source_rigs(std::vector<PrepInput>& sources, bool force) {
 }
 
 
-std::string default_workspace(const std::vector<PrepInput>& sources) {
+namespace {
+
+std::string workspace_base(const std::vector<PrepInput>& sources, bool& exact) {
+    exact = false;
     if (sources.empty()) return {};
     std::string base;
-    // Normally a folder of its own, suffixed _2, _3, ... rather than pointing
-    // at something that already has content in it.
-    bool exact = false;
     if (sources.size() == 1) {
         const fs::path p(sources[0].path);
         if (sources[0].is_video) {
             base = (p.parent_path() / (p.stem().string() + "_dataset")).string();
-        } else if (named_images(p)) {
+        } else if (named_images(p) && !sources[0].heif) {
             // A dataset folder: images/ (and masks/) are already where every
             // parser looks for them, so the reconstruction belongs beside them
             // as sparse/ -- in that folder, not in a copy of it with a suffix.
             base = p.parent_path().string();
             exact = true;
+        } else if (named_images(p)) {
+            // ... unless they are HEIC, whose JPEGs need an images/ of their own.
+            base = p.parent_path().string() + "_dataset";
         } else {
             base = sources[0].path + "_dataset";
         }
@@ -276,14 +290,44 @@ std::string default_workspace(const std::vector<PrepInput>& sources) {
         const fs::path dir = fs::path(sources[0].path).parent_path();
         base = (dir / (dir.filename().string() + "_dataset")).string();
     }
+    return base;
+}
+
+}  // namespace
+
+std::string default_workspace(const std::vector<PrepInput>& sources) {
+    // Normally a folder of its own, suffixed _2, _3, ... rather than pointing
+    // at something that already has content in it.
+    bool exact = false;
+    const std::string base = workspace_base(sources, exact);
     if (base.empty()) return {};
     return exact ? base : fresh_workspace(base);
+}
+
+bool workspace_named_by(const std::vector<PrepInput>& sources, const std::string& ws) {
+    bool exact = false;
+    const std::string base = workspace_base(sources, exact);
+    if (base.empty() || ws.empty()) return false;
+    if (ws == base) return true;
+    if (exact || ws.size() <= base.size() + 1 || ws.compare(0, base.size() + 1, base + "_") != 0)
+        return false;
+    for (size_t i = base.size() + 1; i < ws.size(); i++)
+        if (!std::isdigit((unsigned char)ws[i])) return false;
+    return true;
 }
 
 
 bool any_pano360(const std::vector<PrepInput>& sources) {
     for (const PrepInput& s : sources)
         if (s.pano360.valid()) return true;
+    return false;
+}
+
+bool any_fisheye_or_pano_lens(const std::vector<PrepInput>& sources,
+                              const std::string& fallback) {
+    for (const std::string& m :
+         camera_group_models(sources, camera_groups(sources), fallback))
+        if (sfm_model_is_fisheye(m) || m == "equirectangular") return true;
     return false;
 }
 
@@ -378,6 +422,18 @@ void normalize_source_fps(std::vector<PrepInput>& sources, float& video_fps) {
 }
 
 
+void normalize_source_luts(std::vector<PrepInput>& sources) {
+    for (size_t i = 0; i < sources.size(); i++) {
+        PrepInput& s = sources[i];
+        if (!s.is_video || s.lut.empty()) continue;
+        const std::string chosen = s.lut;
+        s.lut.clear();
+        if (input_lut(sources, i) != (chosen == kLutNone ? std::string() : chosen))
+            s.lut = chosen;
+    }
+}
+
+
 void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
                            const std::string& model) {
     sfm.camera_model = model;
@@ -426,18 +482,27 @@ void apply_pano_lens(std::vector<PrepInput>& sources, SfmJob& sfm,
 }
 
 
+void apply_capture_order(const std::vector<PrepInput>& sources, SfmJob& sfm,
+                         ColmapJob& colmap) {
+    if (sources.empty()) return;
+    const PrepInput& head = sources[0];
+    const bool ordered = head.is_video && head.sequential;
+    if (sfm.data_type != 2) sfm.data_type = ordered ? 1 : 0;
+    // NOT sequential for a dual-lens video or a 360 file's views: temporal
+    // neighbours miss every cross-lens pair -- 68/118 registered on an X5
+    // capture against 116/118 for automatic, which is content-based.
+    if (colmap.matcher != 3)
+        colmap.matcher = ordered && !is_dual_lens(head) && !any_pano360(sources) ? 2 : 1;
+}
+
+
 void apply_capture_defaults(std::vector<PrepInput>& sources, SfmJob& sfm,
                             ColmapJob& colmap) {
     normalize_source_fps(sources, sfm.prep.video_fps);
     if (sources.empty()) return;
-    const bool video = sources[0].is_video;
     const bool dual = is_dual_lens(sources[0]);
-    sfm.data_type = video ? 1 : 0;
     sfm.pairs = 0;               // automatic
-    // NOT sequential for a dual-lens video: the tracks are concatenated, so
-    // temporal neighbours miss every cross-lens pair -- 68/118 registered on an
-    // X5 capture against 116/118 for automatic, which is content-based.
-    colmap.matcher = (video && !dual) ? 2 : 1;
+    apply_capture_order(sources, sfm, colmap);
     colmap.seq_loop_closure = true;   // if switched to sequential
     if (has_fisheye_lens(sources[0])) {
         colmap.camera_model = "THIN_PRISM_FISHEYE";
@@ -448,11 +513,6 @@ void apply_capture_defaults(std::vector<PrepInput>& sources, SfmJob& sfm,
         colmap.camera_mode = 1;
     }
     if (any_pano360(sources)) {
-        // Views of one frame share no features, so temporal neighbours are not
-        // the pairs that hold a 360 dataset together; the same reasoning as the
-        // dual-lens case above, and content-based selection is the answer.
-        sfm.pairs = 0;
-        colmap.matcher = 2;
         // Every view of every 360 input is the same camera by construction --
         // one focal, one centre, no distortion -- so folder grouping would hand
         // bundle adjustment six copies of it to drift apart.
@@ -474,7 +534,7 @@ void dataset_adapt_preset(const std::string& preset,
     if (preset != "360-camera" || sources.empty()) return;
     // A packed dual-lens file (.insv/.360) is already handled: the pano plan
     // warps it into views and decides their lens, which is not this question.
-    // An .insp or .lrv measures 2:1 and is two fisheye circles, not a panorama.
+    // An .insp, .lrv or .prx measures 2:1 and is two fisheye circles, not a panorama.
     if (any_pano360(sources)) return;
     for (const PrepInput& s : sources)
         if (has_fisheye_lens(s)) return;

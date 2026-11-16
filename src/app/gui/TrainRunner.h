@@ -36,6 +36,7 @@ public:
         LoadError,  // preview parse failed
         Preparing,  // start_training: re-parse + engine setup
         Training,   // step loop running
+        Evaluating, // held-out render and metrics pass running
         Done,       // finished or stopped (checkpoint saved); engine viewable
         TrainError, // training pipeline failed
     };
@@ -88,6 +89,7 @@ public:
 
     // Latest per-step progress (copy).
     spirula::TrainerProgress latest_progress();
+    spirula::EvalProgress latest_eval_progress();
     // Mean over the last 100 steps. A single step's latency swings
     // several-fold with whether a viewer render landed on it, so it is not a
     // number to put on screen.
@@ -98,6 +100,11 @@ public:
     double elapsed_seconds();
     void get_metrics(std::vector<MetricPoint>& out);
     std::vector<std::string> drain_log();
+
+    // While start_training() downloads an LPIPS checkpoint: the line to show
+    // and 0..1 (-1 unknown). Empty otherwise.
+    std::string fetch_line();
+    float fetch_progress();
 
     // ---- Unreadable dataset file ------------------------------------------
 
@@ -113,6 +120,9 @@ private:
     double avg_latency_locked() const;   // caller holds _mu
     void join_worker();
     bool await_data_decision(const std::string& what);
+    // What setup_engine() would download, fetched with a progress readout
+    // instead; throws when a file does not arrive.
+    void fetch_eval_models(const TrainConfig& cfg);
 
     std::unique_ptr<spirula::TrainerSession> _session;
     std::unique_ptr<ViewerServer> _web_viewer;
@@ -128,9 +138,12 @@ private:
     mutable std::mutex _mu;       // guards everything below
     std::string _error;
     spirula::TrainerProgress _latest;
+    spirula::EvalProgress _eval;
     std::deque<double> _latencies;
     std::vector<MetricPoint> _metrics;
     std::vector<std::string> _log;
+    std::string _fetch_line;
+    float _fetch_progress = -1.0f;
 };
 
 }  // namespace gui

@@ -9,9 +9,11 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "data/Yaml.h"
 #include "sfm/Pipeline.h"
+#include "sfm/core/Exif.h"
 #include "sfm/core/Manifest.h"
 #include "sfm/core/Rig.h"
 #include "sfm/tests/TestMain.h"
@@ -225,6 +227,57 @@ static int cmdManifestTest(int, char**) {
               "and then the manifest's mask_dir is what is used");
     }
 
+    // Sensors held back per capture and per folder: on unless said, and a
+    // switch left on signs nothing, so earlier resume states still match.
+    {
+        write_file(dir + "/sensors.yaml",
+                   "captures:\n"
+                   "  - prefix: a\n"
+                   "    telemetry: a.insv\n"
+                   "    imu: false\n"
+                   "  - prefix: b\n"
+                   "    telemetry: b.mp4\n"
+                   "exif:\n"
+                   "  - prefix: drone/\n"
+                   "    attitude: false\n"
+                   "  - prefix: .\n"
+                   "    gps: false\n");
+        const Manifest s = manifest_read(dir + "/sensors.yaml");
+        check(s.captures.size() == 2 && !s.captures[0].imu && s.captures[0].gps &&
+                  s.captures[1].imu && s.captures[1].gps,
+              "a capture's IMU switch, both on when unsaid");
+        check(s.exif.size() == 2 && s.exif[0].prefix == "drone" && s.exif[0].gps &&
+                  !s.exif[0].attitude && s.exif[1].prefix.empty() && !s.exif[1].gps,
+              "a folder's EXIF switches; '.' is the whole capture");
+        write_file(dir + "/sensors2.yaml", manifest_write(s));
+        check(manifest_write(manifest_read(dir + "/sensors2.yaml")) == manifest_write(s),
+              "the switches survive a round trip");
+
+        SfmConfig sc;
+        std::string sd;
+        check(manifest_apply(s, sc, {}, sd).empty() && sc.telemetry_inputs.size() == 2 &&
+                  !sc.telemetry_inputs[0].imu && sc.telemetry_inputs[0].gps &&
+                  sc.telemetry_inputs[1].imu,
+              "a capture's switches reach the config");
+        check(sc.exif_attitude_off == std::vector<std::string>{"drone"} &&
+                  sc.exif_gps_off == std::vector<std::string>{""},
+              "and a folder's, as prefixes");
+        check(exifPrefixCovers({"drone"}, "drone/a.jpg") &&
+                  !exifPrefixCovers({"drone"}, "drone2/a.jpg") && exifPrefixCovers({""}, "x.jpg"),
+              "a prefix covers a folder, not a name it begins");
+
+        SfmConfig on = sc;
+        on.telemetry_inputs[0].imu = true;
+        on.exif_gps_off.clear();
+        on.exif_attitude_off.clear();
+        check(stageSignature(sc, CMD_MATCH) != stageSignature(on, CMD_MATCH),
+              "held-back sensors change what matching is signed with");
+        SfmConfig none = on;
+        none.telemetry_inputs.clear();
+        check(stageSignature(on, CMD_MATCH) == stageSignature(none, CMD_MATCH),
+              "sensors left on sign nothing");
+    }
+
     // A rig kind fills in the extrinsics it implies and survives a round trip;
     // an explicit member refine does too.
     {
@@ -243,11 +296,11 @@ static int cmdManifestTest(int, char**) {
                    "        refine: translation\n");
         Manifest k = manifest_read(dir + "/kind.yaml");
         check(k.rigs.size() == 2 && k.rigs[0].kind == "dual-fisheye" &&
-                  k.rigs[0].members[1].has_ext && k.rigs[0].members[1].dof == kRigDofAll &&
+                  k.rigs[0].members[1].has_ext && k.rigs[0].members[1].dof == kRigDofAxial &&
                   !k.rigs[0].members[1].ext_fixed &&
                   std::fabs(k.rigs[0].members[1].ext.R[0] + 1.0) < 1e-12 &&
                   std::fabs(k.rigs[0].members[1].ext.R[8] + 1.0) < 1e-12,
-              "dual-fisheye: back to back, refined freely");
+              "dual-fisheye: back to back, the baseline its only translation");
         check(k.rigs[1].members[1].dof == kRigDofTranslation, "refine: translation");
         write_file(dir + "/kind2.yaml", manifest_write(k));
         check(manifest_write(manifest_read(dir + "/kind2.yaml")) == manifest_write(k),
@@ -255,7 +308,7 @@ static int cmdManifestTest(int, char**) {
         RigDef d;
         check(parseRigArg("dual-fisheye=a/cam0,a/cam1", d).empty() && d.kind == "dual-fisheye" &&
                   d.members.size() == 2 && d.members[1].prefix == "a/cam1" &&
-                  d.members[1].dof == kRigDofAll,
+                  d.members[1].dof == kRigDofAxial,
               "--rig dual-fisheye=...");
         write_file(dir + "/badkind.yaml", "rigs:\n  - kind: trifocal\n    members: [a, b]\n");
         bool bad_kind = false;
@@ -326,6 +379,39 @@ static int cmdManifestTest(int, char**) {
                   matches(restored, 0, cm.cameras[0].params) &&
                   matches(restored, 1, cm.cameras[1].params),
               "calibration survives the match-to-map file boundary");
+        check(!reread.sensor_calibration, "an uncalibrated match file has no sensor sample");
+        const std::string legacy = dir + "/legacy.bin";
+        writeMatches(legacy, db);
+        std::filesystem::resize_file(legacy, std::filesystem::file_size(legacy) - 1);
+        {
+            std::fstream f(legacy, std::ios::binary | std::ios::in | std::ios::out);
+            const uint32_t version = 4;
+            f.seekp(4);
+            f.write((const char*)&version, 4);
+        }
+        check(!readMatches(legacy).sensor_calibration,
+              "v4 matches load without sensor calibration provenance");
+        db.sensor_calibration = std::vector<PairRotationObs>{{0, 1, {0, -1, 0, 1, 0, 0, 0, 0, 1}}};
+        db.sensor_calibration_fingerprint = 0x123456789abcdef0ull;
+        writeMatches(dir + "/calibrated.bin", db);
+        reread = readMatches(dir + "/calibrated.bin");
+        check(reread.sensor_calibration && reread.sensor_calibration->size() == 1 &&
+                  reread.sensor_calibration->front().i == 0 &&
+                  reread.sensor_calibration->front().j == 1 &&
+                  reread.sensor_calibration->front().R_ji == db.sensor_calibration->front().R_ji,
+              "pre-verification rotations survive the match-to-map file boundary exactly");
+        check(reread.sensor_calibration_fingerprint == db.sensor_calibration_fingerprint,
+              "sensor calibration provenance survives the file boundary");
+        const std::string sample_path = dir + "/calibrated.bin";
+        std::filesystem::resize_file(sample_path, std::filesystem::file_size(sample_path) - 8);
+        reread = readMatches(sample_path);
+        check(reread.sensor_calibration && reread.sensor_calibration_fingerprint == 0,
+              "early v5 samples without provenance still load for recalibration");
+        db.sensor_calibration->clear();
+        writeMatches(dir + "/calibrated.bin", db);
+        reread = readMatches(dir + "/calibrated.bin");
+        check(reread.sensor_calibration && reread.sensor_calibration->empty(),
+              "a failed sensor calibration stays distinct from a missing sample");
         const auto old_signature = stageSignature(cc, CMD_MATCH);
         cc.camera.overrides[0].params[2] += 1e-9;
         check(stageSignature(cc, CMD_MATCH) != old_signature,

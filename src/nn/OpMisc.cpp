@@ -5,6 +5,7 @@
 #include "nn/vk/Stream.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace nn {
@@ -33,6 +34,11 @@ struct ConvertParams {
 struct GatherParams {
     uint64_t out, table, ids;
     uint32_t n, cols, vocab, groups_per_row, _pad0;
+};
+
+struct SegmentMeanParams {
+    uint64_t out, x, offsets, ids;
+    uint32_t segments, C, n, groups_per_row;
 };
 
 struct StridedCopyParams {
@@ -202,6 +208,10 @@ void mul(const Tensor& out, const Tensor& a, const Tensor& b, Act act) {
     binary_op(out, a, b, 1, 1.0f, 1.0f, act);
 }
 
+void div(const Tensor& out, const Tensor& a, const Tensor& b) {
+    binary_op(out, a, b, 4, 1.0f, 1.0f, Act::None);
+}
+
 void mul_rows(const Tensor& out, const Tensor& a, const Tensor& b, Act act) {
     NN_CHECK(b.valid() && b.numel() == out.rows(),
              "mul_rows: b has %lld elements for %lld rows", (long long)b.numel(),
@@ -243,6 +253,26 @@ void gather_rows(const Tensor& out, const Tensor& table, const Tensor& ids) {
     p.cols = (uint32_t)out.cols();
     p.vocab = (uint32_t)table.rows();
     vk::SpecList spec{(uint32_t)(table.dtype == DType::F16), 0u};
+    vk::Stream::get().dispatchFlat(entry, spec, out.numel(), 256, &p, sizeof(p),
+                                   &p.groups_per_row);
+}
+
+void segment_mean(const Tensor& out, const Tensor& x, const Tensor& offsets,
+                  const Tensor& ids) {
+    NN_CHECK(out.cols() == x.cols() && offsets.numel() == out.rows() + 1,
+             "segment_mean: %lld segments of %lld channels need %lld offsets, got %lld",
+             (long long)out.rows(), (long long)x.cols(), (long long)(out.rows() + 1),
+             (long long)offsets.numel());
+    const KernelName entry = span_entry("misc.segment_mean", {out, x});
+    SegmentMeanParams p{};
+    p.out = out.ptr;
+    p.x = x.ptr;
+    p.offsets = offsets.ptr;
+    p.ids = ids.ptr;
+    p.segments = (uint32_t)out.rows();
+    p.C = (uint32_t)out.cols();
+    p.n = (uint32_t)x.rows();
+    vk::SpecList spec{(uint32_t)(x.dtype == DType::F16), 0u};
     vk::Stream::get().dispatchFlat(entry, spec, out.numel(), 256, &p, sizeof(p),
                                    &p.groups_per_row);
 }
@@ -452,6 +482,35 @@ void maxpool2x2(const Tensor& out, const Tensor& in) {
     resize_op("resample.maxpool2x2", out, in);
 }
 
+void maxpool(const Tensor& out, const Tensor& in, int kernel, int stride) {
+    NN_CHECK(out.ndim == 3 && in.ndim == 3, "maxpool expects [H, W, C] tensors");
+    NN_CHECK(out.shape[2] == in.shape[2], "maxpool: channel counts differ");
+    NN_CHECK(kernel > 0 && stride > 0 && in.shape[0] >= kernel && in.shape[1] >= kernel,
+             "maxpool(%d, %d) of %lldx%lld", kernel, stride, (long long)in.shape[0],
+             (long long)in.shape[1]);
+    const int64_t want_h = (in.shape[0] - kernel) / stride + 1;
+    const int64_t want_w = (in.shape[1] - kernel) / stride + 1;
+    NN_CHECK(out.shape[0] == want_h && out.shape[1] == want_w,
+             "maxpool(%d, %d) of %lldx%lld is %lldx%lld, but out is %lldx%lld", kernel, stride,
+             (long long)in.shape[0], (long long)in.shape[1], (long long)want_h,
+             (long long)want_w, (long long)out.shape[0], (long long)out.shape[1]);
+    const KernelName entry = span_entry("resample.maxpool", {out, in});
+
+    PoolParams p{};
+    p.out = out.ptr;
+    p.x = in.ptr;
+    p.Ho = (uint32_t)out.shape[0];
+    p.Wo = (uint32_t)out.shape[1];
+    p.Hi = (uint32_t)in.shape[0];
+    p.Wi = (uint32_t)in.shape[1];
+    p.C = (uint32_t)out.shape[2];
+    p.kh = p.kw = (uint32_t)kernel;
+    p.stride_y = p.stride_x = (uint32_t)stride;
+    vk::SpecList spec{(uint32_t)(in.dtype == DType::F16), 0u, 0u};
+    vk::Stream::get().dispatchFlat(entry, spec, out.numel(), 256, &p, sizeof(p),
+                                   &p.groups_per_row);
+}
+
 void resize_nearest(const Tensor& out, const Tensor& in, float scale_y, float scale_x) {
     NN_CHECK(out.ndim == 3 && in.ndim == 3, "resize_nearest expects [H, W, C] tensors");
     NN_CHECK(out.shape[2] == in.shape[2], "resize_nearest: channel counts differ");
@@ -505,7 +564,7 @@ void avgpool(const Tensor& out, const Tensor& in, int kernel, int stride, int pa
 }
 
 void grid_sample_points(const Tensor& out, const Tensor& in, const Tensor& pos,
-                        bool align_corners) {
+                        bool align_corners, GridPad pad) {
     NN_CHECK(in.ndim == 3, "grid_sample_points expects an [H, W, C] map");
     NN_CHECK(pos.dtype == DType::F32 && pos.cols() == 2,
              "grid_sample_points: pos must be an f32 [N, 2] tensor");
@@ -524,9 +583,45 @@ void grid_sample_points(const Tensor& out, const Tensor& in, const Tensor& pos,
     p.W = (uint32_t)in.shape[1];
     p.C = (uint32_t)C;
     p.N = (uint32_t)N;
-    vk::SpecList spec{(uint32_t)(in.dtype == DType::F16), 0u, (uint32_t)align_corners};
+    vk::SpecList spec{(uint32_t)(in.dtype == DType::F16), 0u, (uint32_t)align_corners,
+                      (uint32_t)(pad == GridPad::Border)};
     vk::Stream::get().dispatchFlat(entry, spec, N * C, 256, &p, sizeof(p),
                                    &p.groups_per_row);
+}
+
+void local_correlation(const Tensor& out, const Tensor& a, const Tensor& b,
+                       const Tensor& warp, int radius) {
+    NN_CHECK(radius >= 0 && radius <= 16, "local_correlation: radius must be 0..16");
+    NN_CHECK(a.ndim == 3 && b.ndim == 3 && a.dtype == b.dtype &&
+             (a.dtype == DType::F32 || a.dtype == DType::F16) &&
+             a.shape[0] == b.shape[0] && a.shape[1] == b.shape[1] && a.shape[2] == b.shape[2],
+             "local_correlation: equal feature maps required");
+    const int64_t h = a.shape[0], w = a.shape[1], c = a.shape[2];
+    const int window = 2 * radius + 1, taps = window * window;
+    NN_CHECK(h > 0 && w > 0 && c > 0 && warp.ndim == 3 && warp.dtype == DType::F32 &&
+             warp.shape[0] == h && warp.shape[1] == w && warp.shape[2] == 2 &&
+             out.ndim == 3 && out.dtype == DType::F32 && out.shape[0] == h &&
+             out.shape[1] == w && out.shape[2] == taps, "local_correlation: incompatible output or warp");
+    struct Params {
+        uint64_t out, a, b, warp;
+        uint32_t h, w, c, radius, start, count, groups_per_row;
+        float inv_sqrt_channels;
+    } p{};
+    p.out = out.ptr; p.a = a.ptr; p.b = b.ptr; p.warp = warp.ptr;
+    p.h = (uint32_t)h; p.w = (uint32_t)w; p.c = (uint32_t)c; p.radius = (uint32_t)radius;
+    p.inv_sqrt_channels = 1.0f / std::sqrt((float)c);
+    const KernelName entry = span_entry("resample.local_correlation", {out, a, b, warp});
+    auto& stream = vk::Stream::get();
+    const double work_per_thread = 32.0 * c;
+    const vk::SpecList spec{(uint32_t)(a.dtype == DType::F16)};
+    const int64_t chunk =
+        std::max<int64_t>(1, (int64_t)(stream.workCap(entry, spec) / work_per_thread));
+    for (int64_t begin = 0; begin < out.numel(); begin += chunk) {
+        p.start = (uint32_t)begin;
+        p.count = (uint32_t)std::min(chunk, out.numel() - begin);
+        stream.dispatchFlat(entry, spec, p.count, 256, &p, sizeof p, &p.groups_per_row,
+                            p.count * work_per_thread);
+    }
 }
 
 // One workgroup per row, so rows are independent: the grid folds over them and

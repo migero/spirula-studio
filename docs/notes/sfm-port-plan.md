@@ -76,7 +76,7 @@ New options in `cmake/SsOptions.cmake`:
 | Option | Default | Meaning |
 |---|---|---|
 | `SS_BUILD_SFM` | `ON` for `SS_BACKEND=vulkan`, `OFF` for `cuda` | build the SfM library, CLI and GUI integration |
-| `SS_SFM_REALS` | `float;double;df` (`float;double` on Windows) | BA scalar configurations to compile |
+| `SS_SFM_REALS` | `float;double` | BA scalar configurations to compile |
 | `SS_SFM_LOSSES` | `trivial;huber;cauchy` | BA robust losses to compile |
 
 Resulting targets:
@@ -244,9 +244,10 @@ training.
 
 1. **Landed:** `EQUIRECTANGULAR` (id 17) is carried rather than refused —
    `ColmapParser` reads it and checks the 2:1 aspect, the projection kernels
-   have variants, and the GUI offers it. One gap left: `unproject_raydir`
-   (`src/shaders/pixel_wise.slang`) falls back to pinhole for it, so depth and
-   normal supervision on an equirect camera is silently wrong.
+   have variants, and the GUI offers it. `unproject_raydir`
+   (`src/shaders/pixel_wise.slang`) unprojects equirectangular rays via
+   `equirect_unproj`, so depth and normal supervision on equirectangular
+   cameras is supported.
 2. Verify a round trip for every other model the mapper emits: reconstruct,
    parse, train one step. `THIN_PRISM_FISHEYE` and `OPENCV_FISHEYE` in
    particular.

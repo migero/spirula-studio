@@ -3,6 +3,7 @@
 #include "app/gui/DatasetPreset.h"
 
 #include "data/JsonField.h"
+#include "dense/ConfigFields.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -17,6 +18,10 @@ namespace {
 // clicks, the fitted borders, the tool paths and the redo-a-step flags.
 #define SS_DATASET_PRESET_FIELDS(X)                                           \
     X("engine_colmap",              colmap_engine)                            \
+    X("dense_enable",               sfm.dense.enable)                         \
+    X("dense_use_for_training",     sfm.dense.use_for_training)               \
+    X("dense_log_performance",      sfm.dense.log_performance)                \
+    X("dense_config",               sfm.dense.config)                         \
     /* ---- input handling and frame extraction ---- */                       \
     X("resume",                     sfm.prep.resume)                          \
     X("photo_import",               sfm.prep.photo_import)                    \
@@ -28,6 +33,12 @@ namespace {
     X("gps_spacing",                sfm.prep.gps_spacing)                     \
     X("gps_spacing_m",              sfm.prep.gps_spacing_m)                   \
     X("sharp_window",               sfm.prep.sharp_window)                    \
+    X("skip_blurry",                sfm.prep.skip_blurry)                     \
+    X("blur_px",                 sfm.prep.blur_px)                      \
+    X("blur_neighbour",             sfm.prep.blur_neighbour)                  \
+    X("similar_bits",               sfm.prep.similar_bits)                    \
+    X("blur_review",                sfm.prep.blur_review)                     \
+    X("keep_skipped",               sfm.prep.keep_skipped)                    \
     X("sync_tracks",                sfm.prep.sync_tracks)                     \
     X("max_frames",                 sfm.prep.max_frames)                      \
     X("auto_rotate",                sfm.prep.auto_rotate)                     \
@@ -41,6 +52,7 @@ namespace {
     /* ---- colour space ---- */                                              \
     X("image_gamut",                sfm.image_gamut)                          \
     X("image_is_linear",            sfm.image_is_linear)                      \
+    X("image_exposure",             sfm.image_exposure)                       \
     X("point_color_in_image_space", sfm.point_color_in_image_space)           \
     /* ---- masking ---- */                                                   \
     X("mask_enable",                sfm.prep.mask_enable)                     \
@@ -80,6 +92,7 @@ namespace {
     X("geometry_depth_mm",          sfm.geometry.depth_mm)                    \
     X("geometry_ray_depth",         sfm.geometry.ray_depth)                   \
     X("geometry_split",             sfm.geometry.split)                       \
+    X("geometry_face_res",          sfm.geometry.face_res)                    \
     X("geometry_overwrite",         sfm.geometry.overwrite)                   \
     /* ---- the built-in reconstruction ---- */                               \
     X("sfm_quality",                sfm.quality)                              \
@@ -90,7 +103,6 @@ namespace {
     X("sfm_overlap",                sfm.overlap)                              \
     X("sfm_loop_closure",           sfm.loop_closure)                         \
     X("sfm_prefilter_sequential",   sfm.prefilter_sequential)                 \
-    X("sfm_use_sequence",           sfm.use_sequence)                         \
     X("sfm_init_focal_px",          sfm.init_focal_px)                        \
     X("sfm_init_distortion",        sfm.init_distortion)                      \
     X("sfm_distortion_refine",      sfm.distortion_refine)                    \
@@ -143,6 +155,11 @@ void clamp_to(T& v, T lo, T hi) { v = std::clamp(v, lo, hi); }
 template <typename E>
 void clamp_enum(E& v, int lo, int hi) { v = (E)std::clamp((int)v, lo, hi); }
 
+// An index into one of SfmRunner.h's spelling tables: a hand-written bound
+// falls behind the day the table grows.
+template <int N>
+void clamp_index(int& v, const char* const (&)[N]) { v = std::clamp(v, 0, N - 1); }
+
 // One of `options`, or the first of them. A model name the runners do not
 // know reconstructs into nothing, so a hand-edited file cannot carry one.
 void clamp_choice(std::string& v, const char* const* options, int n) {
@@ -180,10 +197,13 @@ bool dataset_apply_preset(DatasetSettings& s, const std::string& name) {
         // Whoever holds a 360 camera is in every frame of it, and so are
         // whatever they carry and their shadow.
         s.sfm.prep.mask_enable = true;
-        s.mask.prompt = "person; hand; backpack; shadow of person";
-        // Outdoors half of every frame is sky, and a clear one yields no
-        // feature points while a cloudy one yields points that drift.
-        s.mask.feature_prompt = "sky; cloud";
+        s.mask.prompt = "tourist; visitor; pedestrian; photographer; child; person; hand; backpack; "
+                        "selfie stick; shadow of person";
+        // People that are pictures or carvings of people, which the
+        // role terms above would otherwise take.
+        s.mask.negative_prompt = "painting; statue; poster";
+        // Clouds and moving water yield feature points that drift.
+        s.mask.feature_prompt = "sky; cloud; water; wave";
         s.sfm.mask_features = true;
         s.border_enable = true;
         return true;
@@ -213,6 +233,7 @@ bool dataset_apply_preset(DatasetSettings& s, const std::string& name) {
 
 
 void sanitize_dataset_settings(DatasetSettings& s) {
+    s.colmap.dense = s.sfm.dense;
     PrepJob& p = s.sfm.prep;
     clamp_enum(p.photo_import, 0, kNumPhotoImports - 1);
     clamp_enum(p.pano.mode, 0, (int)app::Pano360Mode::Fisheye);
@@ -222,6 +243,8 @@ void sanitize_dataset_settings(DatasetSettings& s) {
     p.adaptive_range = std::clamp(p.adaptive_range, 1.0f, 64.0f);
     p.gps_spacing_m = std::clamp(p.gps_spacing_m, 0.1f, 100000.0f);
     clamp_to(p.sharp_window, 1, 1000);
+    p.blur_px = std::clamp(p.blur_px, 1.0f, 40.0f);
+    clamp_to(p.similar_bits, 0, 32);
     clamp_to(p.max_frames, 1, 1000000);
     clamp_to(p.mask_detect_every, 1, 1000);
     clamp_to(p.mask_memory_frames, 0, 64);
@@ -245,20 +268,21 @@ void sanitize_dataset_settings(DatasetSettings& s) {
     clamp_to(g.jpeg_quality, 1, 100);
     clamp_to(g.ray_depth, 0, 2);
     clamp_to(g.split, 0, 2);
+    clamp_to(g.face_res, 0, 1);
 
     SfmJob& j = s.sfm;
-    clamp_to(j.quality, 0, 3);
-    clamp_to(j.data_type, 0, 2);
-    clamp_to(j.camera_mode, 0, 2);
-    clamp_to(j.pairs, 0, 3);
+    clamp_index(j.quality, kSfmQuality);
+    clamp_index(j.data_type, kSfmDataType);
+    clamp_index(j.camera_mode, kSfmCameraMode);
+    clamp_index(j.pairs, kSfmPairs);
     clamp_to(j.overlap, 1, 1000);
     clamp_to(j.distortion_refine, 0, 2);
-    clamp_to(j.mapper, 0, 1);
-    clamp_to(j.features, 0, 2);
-    clamp_to(j.matcher, 0, 1);
-    clamp_to(j.metric_gps, 0, 2);
-    clamp_to(j.sensor_gauge, 0, 2);
-    clamp_to(j.exif_attitude, 0, 2);
+    clamp_index(j.mapper, kSfmMapper);
+    clamp_index(j.features, kSfmFeatures);
+    clamp_to(j.matcher, 0, 2);
+    clamp_index(j.metric_gps, kSfmMetricGps);
+    clamp_index(j.sensor_gauge, kSfmSensorGauge);
+    clamp_index(j.exif_attitude, kSfmExifAttitude);
     clamp_to(j.gps_max_error, 1, 10);
     clamp_to(j.max_features, 0, 1000000);
     clamp_to(j.max_image_size, 0, 32768);
@@ -266,7 +290,7 @@ void sanitize_dataset_settings(DatasetSettings& s) {
     clamp_choice(j.camera_model, kSfmCameraModels, kNumSfmCameraModels);
     // LightGlue only means something with a learned frontend, and the CLI
     // refuses the combination rather than quietly ignoring it.
-    if (j.features == 0) j.matcher = 0;
+    if (j.features == 0 && j.matcher == 1) j.matcher = 0;
 
     ColmapJob& c = s.colmap;
     clamp_choice(c.camera_model, kColmapCameraModels, kNumColmapCameraModels);
@@ -287,6 +311,25 @@ void sanitize_dataset_settings(DatasetSettings& s) {
     c.abs_pose_max_error = std::max(0.0f, c.abs_pose_max_error);
 }
 
+
+std::string dataset_settings_json(const DatasetSettings& s) {
+    JsonWriter w;
+    w.object();
+#define SS_DS_EMIT(key, member) w.field_raw(key, json_field::emit(s.member));
+    SS_DATASET_PRESET_FIELDS(SS_DS_EMIT)
+#undef SS_DS_EMIT
+    w.end();
+    return w.str();
+}
+
+void read_dataset_settings_json(const JsonValue& fields, DatasetSettings& s) {
+    if (!fields.is_object()) return;
+#define SS_DS_LOAD(key, member)                                               \
+    if (const JsonValue* v = fields.find(key)) json_field::assign(s.member, *v);
+    SS_DATASET_PRESET_FIELDS(SS_DS_LOAD)
+#undef SS_DS_LOAD
+    sanitize_dataset_settings(s);
+}
 
 void save_dataset_preset(const DatasetPreset& p, const std::string& path) {
     PresetHeader head{p.name, p.description, path};

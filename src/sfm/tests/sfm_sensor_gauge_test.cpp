@@ -57,7 +57,8 @@ struct RunResult {
     double up_err_deg = 0, scale_err = 0, calib_err_deg = 0;
 };
 
-static RunResult runScenario(const Scenario& sc, SensorMode mode = SensorMode::Auto) {
+static RunResult runScenario(const Scenario& sc, SensorMode mode = SensorMode::Auto,
+                             bool gps = true) {
     RunResult out;
     out.R_ci = angleAxisToRotation(Vec3{0.3, -1.2, 0.7});
     Telemetry t = synthesize(sc, out.R_ci);
@@ -77,6 +78,7 @@ static RunResult runScenario(const Scenario& sc, SensorMode mode = SensorMode::A
     cap.timeline = &tl;
     SensorGaugeOptions opt;
     opt.mode = mode;
+    opt.gps = gps;
     out.r = fitSensorGauge(rec, {cap}, opt);
     const SensorGaugeResult& r = out.r;
     // The recovered T must take model up to +Z and model units to metres.
@@ -171,8 +173,24 @@ int cmdSensorGaugeTest(int, char**) {
     // ---- T5: up only mode ------------------------------------------------------
     {
         Scenario sc;
-        RunResult rr = runScenario(sc, SensorMode::Up);
+        RunResult rr = runScenario(sc, SensorMode::Up, false);
         check(rr.r.applied && !rr.r.metric && rr.up_err_deg < 0.5, "T5 up-only mode");
+        check(rr.r.no_scale == SensorNoScale::NotAsked, "T5 scale not asked");
+    }
+    {
+        Scenario sc;
+        RunResult rr = runScenario(sc, SensorMode::Up);
+        std::printf("T5b up + GPS: up %.3f deg, scale err %.4f\n", rr.up_err_deg, rr.scale_err);
+        check(rr.r.applied && rr.r.metric && rr.r.scale_from_gps && !rr.r.scale_from_imu &&
+                  rr.r.up_from_imu && rr.up_err_deg < 0.5,
+              "T5b IMU up, GPS scale");
+    }
+    {
+        Scenario sc;
+        RunResult rr = runScenario(sc, SensorMode::Auto, false);
+        check(rr.r.applied && rr.r.metric && rr.r.scale_from_imu && !rr.r.scale_from_gps &&
+                  !rr.r.place_from_gps,
+              "T5c GPS off");
     }
     // ---- T6: GPS only (no IMU streams) ----------------------------------------
     {
@@ -219,7 +237,7 @@ int cmdSensorGaugeTest(int, char**) {
         check(rr.calib_err_deg < 1.0, "T7 extrinsic within 1 deg");
         check(std::fabs(r.groups[0].g_norm - 9.81) < 0.3, "T7 gravity norm");
     }
-    // ---- T8: the fused gravity is cleaner than the specific force -----------
+    // ---- T8f: the fused gravity is cleaner than the specific force ----------
     // A 2 m/s^2 accelerometer bias is absorbed into the extrinsic only as far
     // as the votes agree; the camera's own gravity stream is free of it.
     {
@@ -229,12 +247,12 @@ int cmdSensorGaugeTest(int, char**) {
         Scenario fused = sc;
         fused.fused_gravity = true;
         RunResult rr = runScenario(fused);
-        std::printf("T8 accel bias: up raw=%.3f deg (spread %.2f deg) fused=%.3f deg "
+        std::printf("T8f accel bias: up raw=%.3f deg (spread %.2f deg) fused=%.3f deg "
                     "(spread %.2f deg)\n",
                     raw.up_err_deg, raw.r.up.spread_deg, rr.up_err_deg, rr.r.up.spread_deg);
-        check(raw.r.up.spread_deg > 3.0, "T8 the specific force votes disagree");
-        check(rr.r.up.spread_deg < 1.0, "T8 fused gravity votes agree");
-        check(rr.up_err_deg < 1.0, "T8 fused gravity keeps the up");
+        check(raw.r.up.spread_deg > 3.0, "T8f the specific force votes disagree");
+        check(rr.r.up.spread_deg < 1.0, "T8f fused gravity votes agree");
+        check(rr.up_err_deg < 1.0, "T8f fused gravity keeps the up");
     }
     // ---- T9: a scale disagreement keeps the GPS heading and place -----------
     // The GPS path is 20 percent small, so the IMU wins the scale; the heading
@@ -251,6 +269,33 @@ int cmdSensorGaugeTest(int, char**) {
         check(r.disagree && r.scale_from_imu && !r.scale_from_gps, "T9 IMU wins the scale");
         check(r.gps.ok && r.place_from_gps, "T9 GPS frame still applied");
         check(heading_err < 3.0, "T9 heading still the GPS's");
+    }
+    // ---- T8: the Avata 360 -- an attitude into a z-down world, no accelerometer
+    {
+        Scenario sc;
+        sc.attitude_only = true;
+        sc.no_accel = true;
+        sc.z_down_world = true;
+        sc.declare_up = true;
+        RunResult rr = runScenario(sc);
+        const SensorGaugeResult& r = rr.r;
+        std::printf("T8 attitude, no accel: applied=%d metric=%d up=%.3f deg calib=%.3f deg sign=%.0f "
+                    "scale_err=%.4f\n", r.applied, r.metric, rr.up_err_deg, rr.calib_err_deg,
+                    r.groups[0].fit.gyro_sign, rr.scale_err);
+        printGroups(r);
+        check(r.groups[0].fit.ok && rr.calib_err_deg < 1.0, "T8 extrinsic within 1 deg, no accelerometer");
+        check(r.up_from_imu && rr.up_err_deg < 0.5, "T8 up from the declared vertical within 0.5 deg");
+        check(r.applied && r.metric && r.scale_from_gps && !r.scale_from_imu, "T8 metric from GPS alone");
+    }
+    // ---- T8b: the same with no vertical declared ------------------------------
+    {
+        Scenario sc;
+        sc.attitude_only = true;
+        sc.no_accel = true;
+        sc.z_down_world = true;
+        RunResult rr = runScenario(sc);
+        check(!rr.r.up_from_imu && rr.r.groups[0].fit.reason == ExtrinsicFail::NoStream,
+              "T8b no vertical declared, no up");
     }
     std::printf("%s\n", fails ? "FAIL" : "PASS");
     return fails ? 1 : 0;

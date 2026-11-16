@@ -8,10 +8,12 @@
 // ours to rewrite, so the edit lands beside it as a Nerfstudio dataset, which
 // parse_dataset reads first from then on.
 
+#include "core/BufferedFile.h"
 #include "core/Similarity.h"
 #include "data/DatasetParser.h"
 
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -70,6 +72,14 @@ std::vector<std::string> sparse_write_copy(const std::string& dataset_dir,
                                            const Sim3* moved = nullptr,
                                            SparseBaseline* base = nullptr);
 
+// The same edit written as one more model folder, `model_dir`, usually beside
+// the dataset's own in sparse/. Throws when `model_dir` already holds files.
+std::vector<std::string> sparse_write_model(const std::string& dataset_dir,
+                                            const std::string& model_dir,
+                                            const SparseKeep& keep,
+                                            const Sim3* moved = nullptr,
+                                            SparseBaseline* base = nullptr);
+
 // What a COLMAP model knows about its own quality and the parser does not
 // keep: who saw each point, and how well. Points are in the file's order --
 // ParsedDataset::points' -- and images are NAMED, as in SparseKeep.
@@ -88,10 +98,26 @@ struct SparseStats {
 SparseStats read_sparse_stats(const std::string& dataset_dir);
 
 // A plain point cloud, for anything that has no reconstruction behind it.
+enum class PlyCoordinates { Float32, Float64 };
+class PointCloudWriter {
+public:
+    PointCloudWriter(const std::string& path, PlyCoordinates coordinates = PlyCoordinates::Float32);
+    void append(const double xyz[3], const uint8_t rgb[3]);
+    void finish();
+    uint64_t count() const { return count_; }
+private:
+    BufferedOutputFile file_;
+    std::string path_;
+    PlyCoordinates coordinates_;
+    std::streampos count_position_;
+    uint64_t count_ = 0;
+    bool finished_ = false;
+};
 // `add`, when given, is written after the kept rows, in `moved`'s frame.
 void write_ply_points(const std::string& path, const double* xyz,
                       const uint8_t* rgb, int64_t n, const uint8_t* keep,
                       const Sim3* moved = nullptr,
+                      PlyCoordinates coordinates = PlyCoordinates::Float32,
                       const ColmapPoints3D* add = nullptr);
 
 }  // namespace spirula

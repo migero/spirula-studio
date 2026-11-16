@@ -184,7 +184,7 @@ bool readJournal(const fs::path& file, const std::string& signature,
                  const std::vector<ImageEntry>& images,
                  std::unordered_map<uint64_t, TwoViewMatches>& kept,
                  std::vector<uint64_t>& done, uint64_t& putative) {
-    std::ifstream f(file, std::ios::binary);
+    spirula::BufferedInputFile f(file, std::ios::binary);
     if (!f || !magic_is(f, "VKRJ") || !check_signature(f, signature)) return false;
     std::unordered_map<uint64_t, TwoViewMatches> k;
     std::vector<uint64_t> d;
@@ -203,11 +203,12 @@ bool readJournal(const fs::path& file, const std::string& signature,
         tvm.image1 = a;
         tvm.image2 = b;
         tvm.config = config;
-        tvm.matches.resize(count);
+        std::vector<FeatureMatch>& m = tvm.matches.mut();
+        m.resize(count);
         bool torn = false;
         for (uint32_t i = 0; i < count; i++) {
-            f.read((char*)&tvm.matches[i].idx1, 4);
-            f.read((char*)&tvm.matches[i].idx2, 4);
+            f.read((char*)&m[i].idx1, 4);
+            f.read((char*)&m[i].idx2, 4);
             if (!f) { torn = true; break; }
         }
         if (torn) break;

@@ -4,7 +4,10 @@
 
 #include "data/SkyDome.h"
 #include "i18n/catalog/Edit.h"
+#include "i18n/catalog/Dense.h"
+#include "dense/Generation.h"
 
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -450,13 +453,29 @@ std::vector<SaveTarget> PointsDoc::save_targets() const {
 std::string PointsDoc::default_save_path(int target) const {
     const std::vector<SaveTarget> t = save_targets();
     if (target < 0 || target >= (int)t.size()) return {};
-    return t[(size_t)target].folder ? _dataset_dir : source_path();
+    if (t[(size_t)target].folder) return _dataset_dir;
+    // A dataset's source is its folder, which a PLY cannot be written over.
+    return source_path() == _dataset_dir ? std::string() : source_path();
+}
+
+std::string PointsDoc::copy_dir(int target) const {
+    const std::vector<SaveTarget> t = save_targets();
+    if (target < 0 || target >= (int)t.size()) return {};
+    std::error_code ec;
+    if (t[(size_t)target].folder) {
+        const fs::path sparse = fs::path(_dataset_dir) / "sparse";
+        return fs::is_directory(sparse, ec) ? sparse.string() : std::string();
+    }
+    const std::string dense = spirula::dense::dense_dataset_of(source_path());
+    return dense.empty() ? std::string() : (fs::path(dense) / "dense").string();
 }
 
 void PointsDoc::save(int target, const std::string& path,
                      std::atomic<int>* progress) {
     const std::vector<SaveTarget> t = save_targets();
     if (target < 0 || target >= (int)t.size()) return;
+    if (!placement_allowed() && !placement().is_identity())
+        throw std::runtime_error(spirula::i18n::msg::dense::edit_source_frame.get());
     if (t[(size_t)target].folder) {
         spirula::SparseKeep keep;
         keep.points = alive_of(kPoints);
@@ -474,6 +493,8 @@ void PointsDoc::save(int target, const std::string& path,
         std::error_code ec;
         if (fs::equivalent(path, _dataset_dir, ec)) {
             spirula::sparse_write_filtered(_dataset_dir, keep, &moved, &_baseline);
+        } else if (fs::equivalent(fs::path(path).parent_path(), fs::path(_dataset_dir) / "sparse", ec)) {
+            spirula::sparse_write_model(_dataset_dir, path, keep, &moved, &_baseline);
         } else {
             spirula::sparse_write_copy(_dataset_dir, path, keep, &moved, &_baseline);
             // A copy trains from the same pictures. Best effort: where links
@@ -491,11 +512,28 @@ void PointsDoc::save(int target, const std::string& path,
     spirula::Sim3 shift;
     for (int i = 0; i < 3; i++) shift.t[i] = _ds.center[(size_t)i];
     const spirula::Sim3 moved = file_placement() * shift;
-    spirula::write_ply_points(
-        path, _ds.points.xyz.data(),
-        _ds.points.rgb.empty() ? nullptr : _ds.points.rgb.data(),
-        _ds.points.num(), alive_of(kPoints).data(), &moved);
+    const std::vector<uint8_t>& keep = alive_of(kPoints);
+    auto write = [&](const std::string& to, spirula::PlyCoordinates coordinates) {
+        spirula::write_ply_points(
+            to, _ds.points.xyz.data(),
+            _ds.points.rgb.empty() ? nullptr : _ds.points.rgb.data(),
+            _ds.points.num(), keep.data(), &moved, coordinates);
+    };
+    std::string dense_dataset;
+    spirula::dense::ArtifactFiles dense;
+    if (spirula::dense::edited_artifact(path, dense_dataset, dense)) {
+        const fs::path part = dense.cloud.parent_path() / "roma-edit.part";
+        write(part.string(), spirula::PlyCoordinates::Float64);
+        spirula::dense::commit_edit(dense_dataset, dense, part, alive_count_of(kPoints));
+    } else {
+        write(path, spirula::dense::dense_dataset_of(path).empty()
+            ? spirula::PlyCoordinates::Float32 : spirula::PlyCoordinates::Float64);
+    }
     if (progress) (*progress)++;
+}
+
+bool PointsDoc::placement_allowed() const {
+    return spirula::dense::dense_dataset_of(source_path()).empty();
 }
 
 }  // namespace gui

@@ -285,7 +285,8 @@ int main() {
         const uint8_t rgb[6] = {135, 180, 220, 10, 20, 30};
         const ColmapPoints3D dome = dome_cloud(xyz, rgb);
         spirula::write_ply_points(p.string(), base.xyz.data(), base.rgb.data(),
-                                  base.num(), nullptr, nullptr, &dome);
+                                  base.num(), nullptr, nullptr,
+                                  spirula::PlyCoordinates::Float32, &dome);
         ColmapPoints3D back = read_ply_points(p.string());
         check(back.num() == 5, "the PLY holds the three points and the dome (" +
                                    std::to_string(back.num()) + ")");

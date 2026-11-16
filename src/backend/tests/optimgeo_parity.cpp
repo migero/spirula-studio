@@ -233,9 +233,9 @@ int main(int argc, char** argv) {
                 /*erank=*/0.1f, /*erank_s3=*/0.05f, /*quat_norm=*/0.1f,
                 /*dc_reg=*/0.01f, /*sh_reg=*/0.01f,
                 /*max_screen_size=*/0.3f, /*max_screen_size_penalty=*/1.5f,
-                c.sam, ct, nq, visit, gq,
+                c.sam, ct, nq, visit, gq, {},
                 /*step=*/7 + step_i, steps, /*grad_scale=*/0.5f,
-                c.zero_grad);
+                c.zero_grad, {});
             backend::device_synchronize();
         }
 
@@ -307,7 +307,8 @@ int main(int argc, char** argv) {
             sfn(ttv(d_sp, {N, K, 3}), ttv(d_sg, {N, K, 3}),
                 ttv(d_sg1, {N, K, 3}), ttv(d_sg2, {N, K, 3}),
                 ttv(d_p, {N, 3}), ttv(d_o, {N, 1}), 1.25e-4f, 0.9f, 0.999f,
-                1e-15f, 1e-4f, /*sh_reg=*/0.01f, 7, 0.5f, is_linear == 1);
+                1e-15f, 1e-4f, /*sh_reg=*/0.01f, 7, SbOptimCells{}, 0.5f,
+                is_linear == 1);
             backend::device_synchronize();
             readback_f(acc, d_sp, 3 * K * N);
             readback_f(acc, d_sg, 3 * K * N);

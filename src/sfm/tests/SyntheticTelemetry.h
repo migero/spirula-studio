@@ -37,6 +37,11 @@ struct Scenario {
     // horizon, which the specific force only approximates while moving.
     bool fused_gravity = false;
     double gps_scale = 1.0;  // multiplies the true positions: a scale disagreement
+    // The Avata 360: the attitude alone, into a z-down world, and the vertical
+    // declared the way the DJI reader declares it.
+    bool no_accel = false;
+    bool z_down_world = false;
+    bool declare_up = false;
     unsigned seed = 7;
 };
 
@@ -62,9 +67,40 @@ inline void poseAt(const Scenario& sc, double t, Mat3& R_wc, Vec3& p) {
     R_wc = mul(mul(mul(Rz, Rx), Ry), transpose(base));
 }
 
+// libstdc++'s std::normal_distribution, draw for draw. The standard leaves the
+// algorithm open and MSVC returns each polar pair in the other order, so with
+// the std one a seed tuned on Linux is different noise on Windows.
+class Normal {
+    double _saved = 0;
+    bool _have = false;
+    static double canonical(std::mt19937& g) {
+        const double lo = g(), hi = g();
+        const double u = (lo + hi * 4294967296.0) / 18446744073709551616.0;
+        return u < 1.0 ? u : std::nextafter(1.0, 0.0);
+    }
+
+public:
+    double operator()(std::mt19937& g) {
+        if (_have) {
+            _have = false;
+            return _saved;
+        }
+        double x, y, r2;
+        do {
+            x = 2.0 * canonical(g) - 1.0;
+            y = 2.0 * canonical(g) - 1.0;
+            r2 = x * x + y * y;
+        } while (r2 > 1.0 || r2 == 0.0);
+        const double m = std::sqrt(-2.0 * std::log(r2) / r2);
+        _saved = x * m;
+        _have = true;
+        return y * m;
+    }
+};
+
 inline Telemetry synthesize(const Scenario& sc, const Mat3& R_ci) {
     std::mt19937 rng(sc.seed);
-    std::normal_distribution<double> N(0, 1);
+    Normal N;
     Telemetry t;
     t.carrier = TelemetryCarrier::Camm;
     t.camera = "synthetic";
@@ -92,11 +128,13 @@ inline Telemetry synthesize(const Scenario& sc, const Mat3& R_ci) {
         Vec3 am = mul(D, f_i + sc.ba + Vec3{N(rng), N(rng), N(rng)} * (sc.accel_noise / std::sqrt(adt)));
         const double tv = ti + sc.clock_offset;
         if (sc.attitude_only) {
-            const Quat q = rotationToQuaternion(mul(R_wi, transpose(D)));
+            const Mat3 F = sc.z_down_world ? Mat3{1, 0, 0, 0, -1, 0, 0, 0, -1} : mat3Identity();
+            const Quat q = rotationToQuaternion(mul(F, mul(R_wi, transpose(D))));
             t.orientation.push_back({tv, q[0], q[1], q[2], q[3]});
         } else {
             t.gyro.push_back({tv, wm.x, wm.y, wm.z});
         }
+        if (sc.no_accel) continue;
         if (sc.accel_rate > 0 && std::fmod(ti + 0.5, adt) >= dt) continue;
         t.accel.push_back({tv, am.x, am.y, am.z});
         if (sc.fused_gravity && std::fmod(ti + 0.5, 1.0 / 24) < dt) {
@@ -106,6 +144,7 @@ inline Telemetry synthesize(const Scenario& sc, const Mat3& R_ci) {
             t.gravity.push_back({tv, u.x / n, u.y / n, u.z / n});
         }
     }
+    if (sc.declare_up) t.attitude_world_up[2] = sc.z_down_world ? -1.0 : 1.0;
     if (sc.gps) {
         const double lat0 = 43.66, lon0 = -79.39;
         const double Re = 6378137.0;

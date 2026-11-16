@@ -19,6 +19,7 @@
 #include "app/gui/mask/MaskSession.h"
 #include "app/gui/mask/MaskSlideshow.h"
 #include "app/gui/mask/MaskWindow.h"
+#include "core/HardwareThreads.h"
 #include "core/ImageOrient.h"
 #include "core/MaskMargin.h"
 #include "core/SourcePath.h"
@@ -64,6 +65,9 @@ void check(bool ok, const std::string& what) {
         std::fflush(stdout);
     }
 }
+
+// A '/'-written expected path in this platform's separators.
+std::string native(const char* p) { return fs::path(p).make_preferred().string(); }
 
 // A chmod can inject a read or write failure only for a non-root POSIX user.
 bool chmod_injects() {
@@ -241,16 +245,16 @@ void test_keys_and_paths() {
               "cam0/00023",
           "key with dot segment in root");
     check(mk::frame_key(root, "/elsewhere/y.jpg") == "y", "key outside root is the stem");
-    check(mk::normalize_dir("/a/b/") == "/a/b", "normalize_dir strips the slash");
-    check(mk::normalize_dir("/a/./b/../c") == "/a/c", "normalize_dir is lexical");
-    check(mk::mask_file("/data/set/masks", "cam0/00023") == "/data/set/masks/cam0/00023.png",
+    check(mk::normalize_dir("/a/b/") == native("/a/b"), "normalize_dir strips the slash");
+    check(mk::normalize_dir("/a/./b/../c") == native("/a/c"), "normalize_dir is lexical");
+    check(mk::mask_file("/data/set/masks", "cam0/00023") == native("/data/set/masks/cam0/00023.png"),
           "mask_file");
     check(mk::layer_file("/data/set/mask_edits", "cam0/00023", mk::Layer::Base) ==
-              "/data/set/mask_edits/cam0/00023.base.png", "layer_file base");
+              native("/data/set/mask_edits/cam0/00023.base.png"), "layer_file base");
     check(mk::layer_file("/data/set/mask_edits", "00023", mk::Layer::Drop) ==
-              "/data/set/mask_edits/00023.drop.png", "layer_file drop");
+              native("/data/set/mask_edits/00023.drop.png"), "layer_file drop");
     check(mk::layer_file("/data/set/mask_edits", "00023", mk::Layer::Keep) ==
-              "/data/set/mask_edits/00023.keep.png", "layer_file keep");
+              native("/data/set/mask_edits/00023.keep.png"), "layer_file keep");
 }
 
 // ---------------------------------------------------------------------------
@@ -1132,9 +1136,12 @@ void test_view_math() {
     check(std::fabs(m.to_mask_x(sx) - before_x) < 1e-2f && std::fabs(m.to_mask_y(sy) - before_y) < 1e-2f,
           "the point under the cursor stayed put");
     mk::zoom_about(v, 0.01f, sx, sy, dw, dh, pw, ph);
-    check(v.zoom == 1.0f, "zoom clamps at 1");
+    check(v.zoom == mk::kMinZoom, "zoom clamps at kMinZoom");
+    m = mk::mapping(v, dw, dh, pw, ph);
+    check(m.to_screen_x(0.0f) > 0.0f && m.to_screen_x((float)dw) < pw,
+          "zoomed out, the pane has room on both sides of the mask");
     for (int i = 0; i < 40; i++) mk::zoom_about(v, 2.0f, sx, sy, dw, dh, pw, ph);
-    check(v.zoom == 64.0f, "zoom clamps at 64");
+    check(v.zoom == mk::kMaxZoom, "zoom clamps at kMaxZoom");
     // Cursor at a pane corner, zooming in from an already-cornered view: the
     // recentred point lands off-image and must come back clamped, not just
     // the zoom factor -- the final clamp_view() has to run after recentring.
@@ -1157,6 +1164,10 @@ void test_view_math() {
     mk::Window w = mk::window_for(m, dw, dh, pw, ph);
     check(w.r.x0 == 0 && w.r.y0 == 0 && w.r.x1 == dw && w.r.y1 == dh, "window is the whole mask");
     check(w.step == 1 && w.tw == dw && w.th == dh, "no decimation under 4096");
+    const mk::View out{mk::kMinZoom, 400.0f, 300.0f};
+    const mk::Window ow = mk::window_for(mk::mapping(out, dw, dh, pw, ph), dw, dh, pw, ph);
+    check(ow.r.x0 == 0 && ow.r.y0 == 0 && ow.r.x1 == dw && ow.r.y1 == dh,
+          "zoomed out, the window stops at the mask's edges");
     // A 9000-wide mask fully visible decimates by 3.
     mk::View big{1.0f, 4500.0f, 2000.0f};
     const mk::Mapping bm = mk::mapping(big, 9000, 4000, pw, ph);
@@ -4329,7 +4340,7 @@ void bench_8k(const char* dir) {
         const int depth = mk::slide_depth(mk::slide_picture_bytes(src_w, src_h, target), 100);
         mk::SlidePrefetch p;
         p.set_target(target);
-        const int threads = mk::slide_threads(src_w, src_h, std::thread::hardware_concurrency());
+        const int threads = mk::slide_threads(src_w, src_h, spirula::hardware_threads());
         p.start(frames, threads);
         gui::Picture pic;
         // The first kWarm takes fill an empty ring from cold. Timing them puts
@@ -5742,7 +5753,7 @@ void test_held_region_roundtrip() {
     const mk::AddRegion rebox = mk::expand_region(mk::hold_region(boxed));
     check(rebox.box.set && rebox.box.x0 == 2.0f && rebox.box.y0 == 3.0f &&
               rebox.box.x1 == 50.0f && rebox.box.y1 == 40.0f,
-          "held region: the model's box survives the hold, so a re-apply sizes from it too");
+          "held region: the model's box survives the hold");
     const mk::HeldRegion none = mk::hold_region(disc_region(64, 48, 20.0f, 30.0f, 0.0f));
     check(none.box.empty() && none.mask.empty(), "held region: nothing set holds nothing");
 }
@@ -6016,9 +6027,7 @@ void test_add_stencil_veto_beats_margin() {
           "veto margin: every vetoed pixel stays clear of the grown outline");
 }
 
-// The margin is sized from the model's box when it has one: a text detection's
-// regressed box is not its mask's extent, and the dataset screen uses the box.
-void test_add_stencil_box_sizes_margin() {
+void test_add_stencil_component_sizes_margin() {
     const int W = 96, H = 64;
     mk::AddRegion g = disc_region(W, H, 48.0f, 32.0f, 6.0f);
     const mk::Rect e = extent(g.mask, W, H);
@@ -6030,7 +6039,11 @@ void test_add_stencil_box_sizes_margin() {
     check(from_box > from_extent,
           "box margin: the fixture's box and the mask's extent give different radii");
     std::vector<uint8_t> hit((size_t)W * H, 0);
-    margin::accumulate(g.mask.data(), W, H, from_box, hit);
+    margin::accumulate(g.mask.data(), W, H, from_extent, hit);
+    g.mask[2 * W + 2] = 255;
+    for (int y = 1; y <= 3; ++y)
+        for (int x = 1; x <= 3; ++x)
+            if (std::abs(x - 2) + std::abs(y - 2) <= 1) hit[y * W + x] = 1;
     std::vector<mk::AddRegion> r{g};
     gui::Stencil st;
     mk::Rect b;
@@ -6038,7 +6051,7 @@ void test_add_stencil_box_sizes_margin() {
     check(mk::build_add_stencil(r, W, H, st, b, set, ratio), "box margin: builds");
     bool same = st.in.size() == hit.size();
     for (size_t i = 0; same && i < hit.size(); i++) same = (st.in[i] != 0) == (hit[i] != 0);
-    check(same, "box margin: the radius comes from the model's box, not the mask's extent");
+    check(same, "component margin: the model box does not override the component extent");
 }
 
 // A click on the object whose add is on top inherits that add's mode unless a
@@ -7362,7 +7375,7 @@ void test_slide_prefetch_keeps_buffers() {
     }
     const size_t one = mk::slide_picture_bytes(64, 48, 32);
     const int depth = 3;
-    const int threads = mk::slide_threads(64, 48, std::thread::hardware_concurrency());
+    const int threads = mk::slide_threads(64, 48, spirula::hardware_threads());
     mk::SlidePrefetch p;
     p.set_target(32);
     p.set_byte_budget_for_test((size_t)depth * one);
@@ -7822,7 +7835,7 @@ void test_session_slideshow_threads_from_largest_frame() {
     write_jpg_rgb(images / "cam1" / "c.jpg", 7680, 3840, big);
     std::error_code ec;
     fs::create_directories(masks, ec);
-    const unsigned hw = std::thread::hardware_concurrency();
+    const unsigned hw = spirula::hardware_threads();
     const int want = mk::slide_threads(7680, 3840, hw);
     check(want != mk::slide_threads(1920, 1080, hw),
           "mixed sizes: fixture: this machine budgets 8K and 1080p differently");
@@ -8821,7 +8834,7 @@ int main() {
     test_session_sam_margin_after_prompt();
     test_veto_regions();
     test_add_stencil_veto_beats_margin();
-    test_add_stencil_box_sizes_margin();
+    test_add_stencil_component_sizes_margin();
     test_session_sam_click_mode();
     test_session_sam_redo_then_refine();
     test_session_sam_undo_then_refine();

@@ -27,9 +27,12 @@ struct SelectClock {
     int keep = 0, skip = 1;
     std::vector<int64_t> ends;
     size_t next = 0;
+    FrameSpan span;
+    // Per-video start offset, in source frames; earlier ones are not candidates.
     int64_t from = 0;
 
     bool candidate(int64_t i) {
+        if (i < span.first || span.past(i)) return false;
         if (i < from) return false;
         if (!ends.empty()) {
             while (next < ends.size() && ends[next] < i) ++next;
@@ -51,15 +54,18 @@ using InstantSink = std::function<bool(std::vector<nn::Image>& imgs, int64_t ind
 
 void log_line(const FrameExtractSinks& sinks, const std::string& s);
 
+// Only native open failures set startup_failed, before any frame or callback.
 // `convert` false hands pictures over as decoded, unscaled and unturned: a 360
 // layout is measured in source pixels.
 bool decode_lockstep_vulkan(const FrameExtractJob& o, const FrameExtractSinks& sinks,
                             const std::vector<int>& tracks, bool convert,
                             const std::vector<int64_t>& plan, FrameExtractStats& t,
-                            std::string& error, const InstantSink& on_frame);
+                            std::string& error, const InstantSink& on_frame,
+                            bool& startup_failed);
 bool measure_motion_vulkan(const FrameExtractJob& o, const FrameExtractSinks& sinks,
                            int track, int tracks, MotionPlanInput& out,
-                           FrameExtractStats& t, std::string& error);
+                           FrameExtractStats& t, std::string& error,
+                           bool& startup_failed);
 
 // The same two over ffmpeg. `facts` is the probe the track numbers index.
 bool decode_lockstep_ffmpeg(const FrameExtractJob& o, const FrameExtractSinks& sinks,

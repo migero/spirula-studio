@@ -9,6 +9,7 @@
 // It reaches the pane through ViewportInteractor, as the editor does, and the
 // models through the SourceViews its owner hands it every frame.
 
+#include "app/gui/ProgressClock.h"
 #include "app/gui/ViewportInput.h"
 #include "app/gui/edit/TransformTool.h"
 #include "app/gui/render/FlightFit.h"
@@ -20,6 +21,7 @@
 #include "data/FrustumTemplate.h"
 #include "i18n/Message.h"
 
+#include <cstddef>
 #include <atomic>
 #include <functional>
 #include <map>
@@ -150,6 +152,9 @@ private:
     void save_to(const std::string& path);
     std::string base_name() const;
     spirula::Sim3 primary_placement() const;
+    // Up in the keys' frame; false when no dataset or editor turn says, and
+    // `out` is then the pane's up.
+    bool scene_up(double out[3]) const;
     void open_from(const std::string& path);
 
     // ---- keyframes ----
@@ -172,6 +177,7 @@ private:
     void smooth_pass(double strength);
     // The primary model moved in the editor: the keys go with it.
     void follow_placement();
+    void follow_scene_up();
     // `index` is the project's; see _rt.
     void remove_source(int index);
     void view_source(int index, bool edit);
@@ -287,6 +293,8 @@ private:
     bool _have_project = false;
     // Up came from a dataset or from the user, not from the frame's +Z.
     bool _up_known = false;
+    // From the view: an editor turn carries it rather than replacing it.
+    bool _up_taken = false;
     // The primary model's read the keys follow, and a save that moved it.
     uint64_t _tracked_load = 0;
     std::string _baked_path;
@@ -396,6 +404,7 @@ private:
     std::string _fit_keys;
 
     Job _job;
+    ProgressClock _job_clock;
     std::atomic<int> _encoder_probe{0};  // 0 unknown, 1 probing, 2 built-in works, 3 not
     std::atomic<int> _encoder_codecs{0}; // bit 0 H.264, bit 1 H.265, bit 2 AV1
     int _encoder_max[3][2] = {};         // largest frame per codec

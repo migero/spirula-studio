@@ -42,7 +42,9 @@ plain C++17 with no CUDA dependency (see `csrc/CameraModel.h`).
   - **Color gamut** (Rec.709 / DCI-P3 / Rec.2020 / AdobeRGB / ACEScg /
     ACES2065-1) and a **linear-color** toggle, matching the training pipeline's
     `rgb_to_srgb` conventions.
-  - Spherical harmonics up to degree 4, exposure.
+  - Spherical harmonics up to degree 4, spherical-beta lobes (`sb_params_*`,
+    up to 8, activated at load into two half-float texels each and added to
+    the clamped colour, with a toggle), exposure.
   - Depth sorting matches the training code's `get_sorting_depth`: planar for
     perspective/orthographic, distance for equirectangular, and a smooth
     |z|/radial blend for fisheye — content behind the camera composites
@@ -123,15 +125,16 @@ plain C++17 with no CUDA dependency (see `csrc/CameraModel.h`).
 ## Telemetry viewer — `telemetry.html`
 
 A second, independent page in the same directory: drop videos, photos or whole
-folders and see the **IMU and GPS** they carry. It reuses the trainer's reader
+folders and see the **IMU, GPS and exposure** they carry. It reuses the trainer's reader
 (`src/sfm/core/Telemetry.cpp`, compiled in place into its own WASM module) so
 the browser sees exactly what the reconstruction pipeline sees —
 `docs/notes/imu-gps-for-sfm.md` is what that is for.
 
 - **Detection is by content, not extension.** A GoPro `gpmd` track (GPMF), the
   Insta360 trailer that follows the MP4, a DJI `djmd` protobuf track, a Google
-  **CAMM** track, or **EXIF GPS** in a JPEG. Anything else is skipped silently,
-  so a folder of a few thousand mixed files is a reasonable thing to drop.
+  **CAMM** track, a Kandao `kvar` box, or **EXIF GPS or exposure** in a JPEG.
+  Anything else is skipped silently, so a folder of a few thousand mixed files
+  is a reasonable thing to drop.
 - **Files stay on the machine and are never buffered whole.** The scan worker
   answers the parser's reads with `FileReaderSync` over a `File` slice behind a
   1 MB block cache, so a 4 GB capture is read in place — tested end to end on
@@ -155,6 +158,12 @@ the browser sees exactly what the reconstruction pipeline sees —
   Each channel keeps a min/max pyramid, each level 8× coarser than the one
   below, so a 400 000-sample gyro redraws in the cost of the canvas width
   rather than the capture length.
+- **Exposure** -- shutter, ISO and aperture as a camera logged them per frame,
+  or as each photo's EXIF records them -- is a plot in stops about the clip's
+  mean (the sum the trainer's `--ppisp-exposure-from-exif` compares within one
+  source, with the factors that move beside it), plus shutter / ISO / aperture rows on log axes
+  off by default. The track can be coloured by it, and the readout gives the
+  values at the playhead.
 - **Screenshot-safe mode** (one toggle, also in the header) hides the basemap,
   latitude/longitude, absolute altitude, wall-clock times and file names, and
   redacts the fix line from the report — shapes, distances and every IMU
@@ -162,7 +171,8 @@ the browser sees exactly what the reconstruction pipeline sees —
 - Per-file verdicts come from the same checks the trainer runs: sample-rate
   regularity, the gravity norm, cross-stream gravity agreement, and whether the
   GPS moves rather than repeating one stale fix. The full text report is in the
-  panel.
+  panel. Fixes at 0, 0 -- a receiver with no fix -- are dropped on read, as
+  the trainer drops them.
 
 English only, by design — this is a diagnostic, and the model viewer's i18n
 would be overkill.

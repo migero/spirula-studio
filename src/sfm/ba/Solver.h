@@ -8,6 +8,7 @@
 // to bacpu::Solver -- the same LM loop and linear solvers, on the host.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,7 @@
 
 #include "core/SubmitBudget.h"
 #include "sfm/ba/Options.h"
+#include "sfm/ba/GradientNorm.h"
 #include "sfm/ba/Priors.h"
 #include "sfm/ba/Problem.h"
 #include "sfm/ba/SolverCpu.h"
@@ -91,8 +93,10 @@ public:
     ~BundleSolver() {
         // Persistent context: return this problem's VRAM now, not at ctx
         // teardown. (Owned context frees everything in ~VkContext anyway.)
-        if (!owned_)
+        if (!owned_) {
             for (GpuBuffer* b : ownBufs_) ctx_.destroyBuffer(*b);
+            ctx_.setSpecialization({});
+        }
     }
 
     void init() {
@@ -168,11 +172,20 @@ public:
         double t_ctx = prof_lap();
 
         decidePaths();
+        if (jac32_ || jcChunk_ || jpChunk_ || obs32_ || obsIdentity_)
+            ctx_.setSpecialization({jac32_ ? 1u : 0u, jcChunk_, jpChunk_, obs32_ ? 1u : 0u,
+                                    obsIdentity_ ? 1u : 0u});
+        else
+            ctx_.setSpecialization({});
+        stats_.jac32 = jac32_;
         hasPriors_ = P_.priors && !P_.priors->empty();
         if (hasPriors_) {
             prior_.init(P_);
             hasPriors_ = !prior_.empty();
         }
+        absCentres_ = hasPriors_ && prior_.hasAbsoluteCentres();
+        gradOn_ = opt_.gradient_tol > 0;
+        mirror_ = hasPriors_ || gradOn_;
         hostPoses_ = P_.poses;
         hostExts_ = P_.exts;
 
@@ -181,10 +194,28 @@ public:
         const bool needS = !useCG_ || haveFallback_;
         const uint32_t npart = (P_.n_dim + 255) / 256;
 
+        // Listed before any is created: an allocation the driver refuses throws
+        // out of init(), and the destructor must still free the ones made before it.
+        ownBufs_ = {&bObs_, &bObsImage_, &bObsPoint_, &bImageInfo_, &bGroupInfo_,
+                    &bMemberInfo_, &bExts_, &bExtsBak_,
+                    &bPoses_, &bIntr_, &bPoints_, &bObsRanges_, &bModelObs_, &bJcOff_,
+                    &bJp_, &bS_, &bG_, &bApp_, &bBp_, &bCost_,
+                    &bPosesBak_, &bIntrBak_, &bPointsBak_,
+                    &bBp0_, &bJc_, &bRes_,
+                    &bPairEntries_, &bPairChunks_, &bW_, &bYp_, &bY_,
+                    &bCamRanges_, &bCamObs_, &bCamChunks_, &bCgR_, &bCgZ_, &bCgP_, &bCgSp_,
+                    &bCgV_, &bCgB_, &bCgM_, &bCgScal_, &bCgPart_, &bPrecBlocks_,
+                    &bPriorRows_, &bPriorCols_, &bPriorErow_, &bPriorBlk_, &bPriorG_,
+                    &bGradCam_, &bGradPt_};
+        for (uint32_t c = 0; c + 1 < kMaxJacChunks; c++) {
+            ownBufs_.push_back(&bJcX_[c]);
+            ownBufs_.push_back(&bJpX_[c]);
+        }
         auto mkReal = [&](uint64_t n) { return ctx_.createBuffer(std::max<uint64_t>(n, 1) * rs); };
         auto mkUint = [&](uint64_t n) { return ctx_.createBuffer(std::max<uint64_t>(n, 1) * 4); };
 
-        bObs_ = mkReal(2 * (uint64_t)P_.num_obs);
+        bObs_ = ctx_.createBuffer(std::max<uint64_t>(2 * (uint64_t)P_.num_obs, 1) *
+                                  (obs32_ ? 4 : rs));
         bObsImage_ = mkUint(P_.num_obs);
         bObsPoint_ = mkUint(P_.num_obs);
         bImageInfo_ = ctx_.createBuffer(std::max<size_t>(P_.num_images, 1) * 16);
@@ -195,9 +226,19 @@ public:
         bIntr_ = mkReal(P_.total_intr);
         bPoints_ = mkReal(3 * (uint64_t)P_.num_points);
         bObsRanges_ = mkUint(P_.num_points + 1);
-        bModelObs_ = mkUint(P_.model_obs.size());
+        bModelObs_ = mkUint(obsIdentity_ ? 1 : P_.model_obs.size());
         bJcOff_ = mkUint(P_.num_obs);
-        bJp_ = mkReal(6 * (uint64_t)P_.num_obs);
+        auto mkJac = [&](uint64_t n) {
+            return ctx_.createBuffer(std::max<uint64_t>(n, 1) * jacSize());
+        };
+        auto mkChunks = [&](uint64_t n, uint32_t chunk, uint32_t count, GpuBuffer& first,
+                            GpuBuffer* rest) {
+            for (uint32_t c = 0; c < count; c++) {
+                const uint64_t len = chunk ? std::min<uint64_t>(chunk, n - (uint64_t)c * chunk) : n;
+                (c == 0 ? first : rest[c - 1]) = mkJac(len);
+            }
+        };
+        mkChunks(6 * (uint64_t)P_.num_obs, jpChunk_, nJp_, bJp_, bJpX_);
         const uint64_t packedTc = (uint64_t)tcN_ * (tcN_ + 1) / 2;
         bS_ = mkReal(std::max<uint64_t>(needS ? packed : 1, packedTc + 42 * (uint64_t)P_.num_frames));
         bG_ = mkReal(P_.n_dim);
@@ -214,8 +255,9 @@ public:
         // a rejected step needs no snapshot of them -- only Bp, which the
         // point back-substitution overwrites in place.
         bBp0_ = mkReal(3 * (uint64_t)P_.num_points);
-        bJc_ = mkReal(P_.jc_total);
-        bRes_ = mkReal(2 * (uint64_t)P_.num_obs);
+        mkChunks(P_.jc_total, jcChunk_, nJc_, bJc_, bJcX_);
+        bRes_ = ctx_.createBuffer(std::max<uint64_t>(2 * (uint64_t)P_.num_obs, 1) *
+                                  (jac32_ ? 4 : rs));
         bW_ = mkReal(9 * (uint64_t)P_.num_points);
         bYp_ = mkReal(needS && P_.use_pair_schur ? 6 * (uint64_t)P_.num_obs : 1);
         bY_ = mkReal(std::max<uint64_t>(P_.n_dim, 34 * (uint64_t)tcN_));
@@ -241,9 +283,13 @@ public:
         bPriorErow_ = mkUint(npe);
         bPriorBlk_ = mkReal(36 * (uint64_t)npe);
         bPriorG_ = mkReal(hasPriors_ ? P_.pose_dim : 1);
-        if (hasPriors_ &&
+        bGradCam_ = mkReal(gradOn_ ? P_.n_dim : 1);
+        bGradPt_ = mkUint(1);
+        if (mirror_ &&
             kDlPoses + (P_.pose_dim + P_.exts.size()) * rs > VkContext::stagingCapacity())
             throw std::runtime_error("pose priors: the parameter readback exceeds the staging buffer");
+        if (gradOn_ && dlGrad() + P_.n_dim * rs + 4 > VkContext::stagingCapacity())
+            throw std::runtime_error("gradient stop: the gradient readback exceeds the staging buffer");
 
         // binding order must match sfm/shaders/ba/ba.slang + cg.slang; atomic views
         // alias the same VkBuffer at the odd bindings
@@ -260,17 +306,18 @@ public:
             bCgSp_.buf, bCgB_.buf, bCgM_.buf, bCamChunks_.buf, bPrecBlocks_.buf,
             bMemberInfo_.buf, bExts_.buf,
             bPriorRows_.buf, bPriorCols_.buf, bPriorErow_.buf, bPriorBlk_.buf, bPriorG_.buf,
+            bGradCam_.buf, bGradCam_.buf, bGradPt_.buf,
+            bJc_.buf, bJp_.buf,
         };
-        ownBufs_ = {&bObs_, &bObsImage_, &bObsPoint_, &bImageInfo_, &bGroupInfo_,
-                    &bMemberInfo_, &bExts_, &bExtsBak_,
-                    &bPoses_, &bIntr_, &bPoints_, &bObsRanges_, &bModelObs_, &bJcOff_,
-                    &bJp_, &bS_, &bG_, &bApp_, &bBp_, &bCost_,
-                    &bPosesBak_, &bIntrBak_, &bPointsBak_,
-                    &bBp0_, &bJc_, &bRes_,
-                    &bPairEntries_, &bPairChunks_, &bW_, &bYp_, &bY_,
-                    &bCamRanges_, &bCamObs_, &bCamChunks_, &bCgR_, &bCgZ_, &bCgP_, &bCgSp_,
-                    &bCgV_, &bCgB_, &bCgM_, &bCgScal_, &bCgPart_, &bPrecBlocks_,
-                    &bPriorRows_, &bPriorCols_, &bPriorErow_, &bPriorBlk_, &bPriorG_};
+        // Bindings 57..68: chunks 1..3 of Jc, as Real then as float, then of Jp.
+        // A chunk the problem does not need binds chunk 0, which nothing reads there.
+        for (const auto& [first, rest] : {std::pair<GpuBuffer*, GpuBuffer*>{&bJc_, bJcX_},
+                                          std::pair<GpuBuffer*, GpuBuffer*>{&bJp_, bJpX_}})
+            for (int view = 0; view < 2; view++)
+                for (uint32_t c = 0; c + 1 < kMaxJacChunks; c++)
+                    binds.push_back(rest[c].buf ? rest[c].buf : first->buf);
+        binds.push_back(bObs_.buf);  // 69, 70: the fp32 views of obs and residual
+        binds.push_back(bRes_.buf);
         double t_buf = prof_lap();
         ctx_.createDescriptors(binds);
         // Fresh-from-the-driver allocations happen to arrive zeroed; memory
@@ -282,7 +329,8 @@ public:
         // the previous solve's freed buffers.)
         {
             VkCommandBuffer cb = ctx_.begin();
-            for (GpuBuffer* b : ownBufs_) ctx_.fillZero(cb, *b);
+            for (GpuBuffer* b : ownBufs_)
+                if (b->buf != VK_NULL_HANDLE) ctx_.fillZero(cb, *b);
             ctx_.submit(cb);
         }
 
@@ -294,6 +342,10 @@ public:
             std::string("dp_accum") + schurSuffix_,
         };
         if (!P_.members.empty()) entries.push_back("ext_update");
+        if (gradOn_) {
+            entries.push_back("grad_point_max");
+            entries.push_back(std::string("grad_cam") + schurSuffix_);
+        }
         if (hasPriors_) {
             entries.push_back("prior_add_g");
             if (!useCG_ || haveFallback_) entries.push_back("prior_add_s");
@@ -358,7 +410,13 @@ public:
         // fenced copies were most of a small solve's cost once several solvers
         // share a device (see VkContext::uploadMany).
         std::vector<uint8_t> obs, poses, exts, intr, points;
-        packReals(obs, P_.obs_xy.data(), P_.obs_xy.size(), opt_.real);
+        if (obs32_) {
+            obs.resize(P_.obs_xy.size() * 4);
+            float* f = reinterpret_cast<float*>(obs.data());
+            for (size_t k = 0; k < P_.obs_xy.size(); k++) f[k] = (float)P_.obs_xy[k];
+        } else {
+            packReals(obs, P_.obs_xy.data(), P_.obs_xy.size(), opt_.real);
+        }
         packReals(poses, P_.poses.data(), P_.poses.size(), opt_.real);
         packReals(exts, P_.exts.data(), P_.exts.size(), opt_.real);
         packReals(intr, P_.intr.data(), P_.intr.size(), opt_.real);
@@ -389,6 +447,9 @@ public:
             mi.push_back(m.n_free);
             mi.push_back(m.mask);
         }
+        std::vector<uint32_t> jc_off32;
+        jc_off32.reserve(P_.jc_off.size());
+        for (uint64_t off : P_.jc_off) jc_off32.push_back((uint32_t)off);
         std::vector<VkContext::UploadItem> up = {
             {&bObs_, obs.data(), obs.size()},
             {&bObsImage_, P_.obs_image.data(), P_.obs_image.size() * 4},
@@ -396,8 +457,8 @@ public:
             {&bImageInfo_, ii.data(), ii.size() * 4},
             {&bGroupInfo_, gi.data(), gi.size() * 4},
             {&bObsRanges_, P_.obs_ranges.data(), P_.obs_ranges.size() * 4},
-            {&bModelObs_, P_.model_obs.data(), P_.model_obs.size() * 4},
-            {&bJcOff_, P_.jc_off.data(), P_.jc_off.size() * 4},
+            {&bModelObs_, P_.model_obs.data(), obsIdentity_ ? 0 : P_.model_obs.size() * 4},
+            {&bJcOff_, jc_off32.data(), jc_off32.size() * 4},
             {&bPoses_, poses.data(), poses.size()},
             {&bIntr_, intr.data(), intr.size()},
             {&bPoints_, points.data(), points.size()},
@@ -435,12 +496,27 @@ public:
             sfm::slog::diag(sfm::slog::Tag::Map,
                        "[prof]   solver init: ctx %.3f buf %.3f pipe %.3f upload %.3f s",
                        t_ctx, t_buf, t_pipe, t_upload);
+        pairEntryTotal_ = P_.pair_entries.size() / 2;
         stats_.vram_mb = ctx_.totalAllocatedMB();
         stats_.solver = useCG_ ? (haveFallback_ ? "cg+fallback" : "cg") : "dense";
         if (opt_.verbose)
             sfm::slog::diag(sfm::slog::Tag::Map,
                             "[vk] n_dim = %u, solver = %s, VRAM allocated = %.1f MB",
                        P_.n_dim, stats_.solver, stats_.vram_mb);
+    }
+
+    // Free the per-observation tables init() uploaded: the device never reads
+    // them from the host again, and they are ~55 bytes an observation. Only the
+    // parameter vectors stay. False on the host solver, which keeps them all.
+    bool releaseHostTables() {
+        if (cpu_) return false;
+        for (std::vector<uint32_t>* v :
+             {&P_.obs_image, &P_.obs_point, &P_.obs_ranges, &P_.model_obs,
+              &P_.pair_entries, &P_.pair_chunks, &P_.cam_obs, &P_.cam_chunks})
+            std::vector<uint32_t>().swap(*v);
+        std::vector<uint64_t>().swap(P_.jc_off);
+        std::vector<double>().swap(P_.obs_xy);
+        return true;
     }
 
     // The host solver works on the problem's own parameter vectors, so upload
@@ -496,7 +572,7 @@ public:
 
     void uploadPriors(double damping) {
         if (!hasPriors_) return;
-        prior_.assemble(P_, hostPoses_.data(), hostExts_.data(), damping);
+        prior_.assemble(P_, hostPoses_.data(), hostExts_.data(), damping, opt_.fix_rotations);
         std::vector<uint8_t> blk, g;
         packReals(blk, prior_.blocks().data(), prior_.blocks().size(), opt_.real);
         packReals(g, prior_.gradient().data(), prior_.gradient().size(), opt_.real);
@@ -509,16 +585,18 @@ public:
     // same command buffer read back into the staging buffer.
     double readTotalCost() {
         double c = readCost();
-        if (!hasPriors_) return c;
+        trialPrior_ = 0;
+        if (!mirror_) return c;
         const uint8_t* st = (const uint8_t*)ctx_.stagingDownloadPtr() + kDlPoses;
         unpackReals(trialPoses_, st, P_.poses.size(), opt_.real);
         unpackReals(trialExts_, st + P_.poses.size() * realSize(opt_.real), P_.exts.size(),
                     opt_.real);
-        return c + priorCost(trialPoses_, trialExts_);
+        trialPrior_ = priorCost(trialPoses_, trialExts_);
+        return c + trialPrior_;
     }
 
     void acceptTrialParams() {
-        if (!hasPriors_) return;
+        if (!mirror_) return;
         hostPoses_.swap(trialPoses_);
         hostExts_.swap(trialExts_);
     }
@@ -528,15 +606,21 @@ public:
         auto t0 = std::chrono::high_resolution_clock::now();
         double damping = opt_.init_damping;
         double cost = computeCost();
+        double prior = priorCost(hostPoses_, hostExts_);
         stats_.initial_cost = cost;
+        stats_.prior_initial = prior;
         int noimprov = 0;
 
         bool reuse = false;  // after a reject, the assembly still matches the params
         double reject_mult = 2.0;
         int consec_fallbacks = 0;
         auto last_ckpt = std::chrono::steady_clock::now();
+        // SS_SFM_BA_FAIL_AFTER=N loses the device after N iterations, for the tests.
+        const char* fail_env = spirula::env("SFM_BA_FAIL_AFTER");
+        const int fail_after = fail_env ? std::atoi(fail_env) : -1;
         for (int it = 0; it < opt_.max_iters; it++) {
             sfm::cancel::check();
+            if (it == fail_after) throw VkError(VK_ERROR_DEVICE_LOST, "SS_SFM_BA_FAIL_AFTER");
             if (opt_.verbose)
                 sfm::slog::diag(sfm::slog::Tag::Map, "iter %3d: cost = %.9e, damping = %.3g%s", it,
                                 cost,
@@ -563,6 +647,11 @@ public:
             recordIteration((float)damping, reuse, path);
             endSeg();
             double newCost = readTotalCost();
+            if (gradOn_ && !reuse && gradientConverged()) {
+                restore_pending_ = true;  // the step this segment took is not taken
+                stats_.iterations = it;
+                break;
+            }
             stats_.iterations = it + 1;
 
             if (path == LinSolve::CG) {
@@ -629,18 +718,26 @@ public:
                 }
             }
 
+            const double newPrior = trialPrior_;
             if (std::isfinite(newCost) && newCost <= cost * (1.0 + opt_.rtol)) {
-                if (newCost / cost >= 1.0 - opt_.rtol) {
-                    // tie-zone accept: count toward patience and nudge lambda
-                    // UP -- shrinking it on micro-improvements lets it
-                    // collapse and the solver stall in an ill-conditioned
-                    // plateau (observed with the df config on 871)
-                    if (++noimprov >= opt_.patience) { cost = newCost; break; }
+                const LmAccept acc = classifyAccept(opt_, cost, newCost, absCentres_, prior,
+                                                    newPrior, stats_.prior_steps);
+                if (acc == LmAccept::Tie) {
+                    // tie: count toward patience and leave lambda -- shrinking it on
+                    // every micro-improvement collapses it and stalls the solver in an
+                    // ill-conditioned plateau (observed with the df config on 871)
+                    if (++noimprov >= opt_.patience) {
+                        cost = newCost;
+                        prior = newPrior;
+                        break;
+                    }
                 } else {
-                    noimprov = 0;
+                    if (acc == LmAccept::Improved) noimprov = 0;
+                    else stats_.prior_steps++;
                     damping = std::max(damping / 3.0, kMinDamping);
                 }
                 cost = newCost;
+                prior = newPrior;
                 stats_.accepted++;
                 acceptTrialParams();
                 reuse = false;
@@ -671,12 +768,17 @@ public:
         // must be the last *accepted* parameters.
         flushRestore();
         stats_.final_cost = cost;
+        stats_.prior_final = prior;
+        stats_.final_damping = damping;
         auto t1 = std::chrono::high_resolution_clock::now();
         stats_.solve_seconds = std::chrono::duration<double>(t1 - t0).count();
         ctx_.printProfile();
     }
 
     const SolverStats& stats() const { return cpu_ ? cpu_->stats() : stats_; }
+    // The last gradient test's inputs (sfm_prior_test).
+    const std::vector<double>& lastGradient() const { return cpu_ ? cpu_->lastGradient() : gfull_; }
+    double lastPointGradientMax() const { return cpu_ ? cpu_->lastPointGradientMax() : gptMax_; }
     // The scalar type actually in use, which init() may have stepped down from
     // what SolverOptions asked for (see pickRealForDevice). Anything that packs
     // or unpacks solver buffers from outside has to ask -- packing `double`
@@ -782,6 +884,9 @@ private:
     // the VRAM budget, and build the host-side tables the choice needs.
     void decidePaths() {
         pickTiers();
+        obs32_ = std::all_of(P_.obs_xy.begin(), P_.obs_xy.end(),
+                             [](double v) { return (double)(float)v == v; });
+        obsIdentity_ = P_.model_ranges.size() <= 1;
         const bool exclusive = exclusiveGroups(P_);
         const uint64_t packed = (uint64_t)P_.n_dim * (P_.n_dim + 1) / 2;
         const bool denseOk = packed <= 0x7FFFFFFFull;  // 32-bit packed indexing
@@ -789,68 +894,94 @@ private:
         const bool cgOk = P_.num_obs > 0;
         const double budget = opt_.vram_budget_mb > 0 ? opt_.vram_budget_mb
                                                       : 0.9 * ctx_.deviceLocalHeapMB();
-        // The pair-aggregated Schur assembly is the faster of the two dense
-        // assemblies but the only one that costs memory (the entry lists and
-        // the per-observation Y). Treat it as what it is -- an optional
-        // accelerator -- so a dense problem that no longer fits with it
-        // degrades to the atomic kernel instead of jumping to CG.
-        const double denseObsMB = estimateMB(true, false, false, 0);
-        const double densePairMB = estimateMB(true, false, true, pairEntries);
-        const bool pairOk = exclusive && P_.num_obs > 0 && pairEntries <= kMaxPairEntries &&
-                            densePairMB <= budget;
-        const double denseMB = pairOk ? densePairMB : denseObsMB;
-        double cgMB = estimateMB(false, true, false, 0);
-        double bothMB = estimateMB(true, true, pairOk, pairEntries);
-
-        const uint32_t kDenseMaxDim = 8192;
-
-        switch (opt_.solver) {
-            case SolverSel::Dense:
-                useCG_ = false;
-                if (!denseOk)
-                    throw std::runtime_error(
-                        "reduced system too large for the dense solver (n_dim*(n_dim+1)/2 "
-                        "exceeds 32-bit packed indexing); use --solver cg");
-                break;
-            case SolverSel::CG:
-                useCG_ = cgOk;
-                if (!cgOk) {
-                    sfm::slog::diag(sfm::slog::Tag::Map,
-                               "[vk] warning: no observations, falling back to dense");
-                    if (!denseOk) throw std::runtime_error("no usable solver path");
-                }
-                break;
-            case SolverSel::Auto:
-                useCG_ = cgOk && (P_.n_dim > kDenseMaxDim || !denseOk || denseMB > budget ||
-                                  cgWork() < 0.5 * denseWork(pairOk, pairEntries));
-                if (!useCG_ && !denseOk)
-                    throw std::runtime_error("reduced system too large for the dense solver");
-                break;
-        }
-
-        if (useCG_ && ::planCoarse(P_, kTcMaxDim, tcK_, tcN_, tcEntries_)) {
+        // Jacobians in Real unless the solve then misses the budget or needs more
+        // than kMaxJacChunks buffers for them, where fp32 (ba.slang kJac32) is what
+        // stands between it and the host solver. SS_SFM_BA_JAC32=0/1 forces either.
+        const char* jacEnv = spirula::env("SFM_BA_JAC32");
+        const bool jacForced = jacEnv && jacEnv[0] == '1';
+        const bool jacAllowed = opt_.real != RealCfg::F32 && !(jacEnv && jacEnv[0] == '0');
+        bool pairOk = false;
+        double denseMB = 0, cgMB = 0, bothMB = 0, needMB = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            jac32_ = jacAllowed && (jacForced || pass == 1);
+            // The pair Schur assembly is an optional accelerator that costs memory
+            // (entry lists, per-observation Y): a dense problem that no longer fits
+            // with it degrades to the atomic kernel instead of jumping to CG.
+            const double denseObsMB = estimateMB(true, false, false, 0);
+            const double densePairMB = estimateMB(true, false, true, pairEntries);
+            pairOk = exclusive && P_.num_obs > 0 && pairEntries <= kMaxPairEntries &&
+                     densePairMB <= budget;
+            denseMB = pairOk ? densePairMB : denseObsMB;
             cgMB = estimateMB(false, true, false, 0);
             bothMB = estimateMB(true, true, pairOk, pairEntries);
-        }
 
-        haveFallback_ = false;
-        if (useCG_) {
-            bool want = opt_.cg_fallback == CgFallback::On ||
-                        (opt_.cg_fallback == CgFallback::Auto && bothMB <= 0.5 * budget);
-            haveFallback_ = want && pairOk && denseOk;
-            if (opt_.cg_fallback == CgFallback::On && !haveFallback_)
-                sfm::slog::diag(sfm::slog::Tag::Map, "[vk] warning: dense fallback unavailable "
-                           "(pair-Schur or packed-index limits)");
+            const uint32_t kDenseMaxDim = 8192;
+
+            switch (opt_.solver) {
+                case SolverSel::Dense:
+                    useCG_ = false;
+                    if (!denseOk)
+                        throw std::runtime_error(
+                            "reduced system too large for the dense solver (n_dim*(n_dim+1)/2 "
+                            "exceeds 32-bit packed indexing); use --solver cg");
+                    break;
+                case SolverSel::CG:
+                    useCG_ = cgOk;
+                    if (!cgOk) {
+                        sfm::slog::diag(sfm::slog::Tag::Map,
+                                   "[vk] warning: no observations, falling back to dense");
+                        if (!denseOk) throw std::runtime_error("no usable solver path");
+                    }
+                    break;
+                case SolverSel::Auto:
+                    useCG_ = cgOk && (P_.n_dim > kDenseMaxDim || !denseOk || denseMB > budget ||
+                                      cgWork() < 0.5 * denseWork(pairOk, pairEntries));
+                    if (!useCG_ && !denseOk)
+                        throw std::runtime_error("reduced system too large for the dense solver");
+                    break;
+            }
+
+            if (useCG_ && ::planCoarse(P_, kTcMaxDim, tcK_, tcN_, tcEntries_)) {
+                cgMB = estimateMB(false, true, false, 0);
+                bothMB = estimateMB(true, true, pairOk, pairEntries);
+            }
+
+            haveFallback_ = false;
+            if (useCG_) {
+                bool want = opt_.cg_fallback == CgFallback::On ||
+                            (opt_.cg_fallback == CgFallback::Auto && bothMB <= 0.5 * budget);
+                haveFallback_ = want && pairOk && denseOk;
+                if (opt_.cg_fallback == CgFallback::On && !haveFallback_)
+                    sfm::slog::diag(sfm::slog::Tag::Map, "[vk] warning: dense fallback unavailable "
+                               "(pair-Schur or packed-index limits)");
+            }
+
+            needMB = (useCG_ ? cgMB : denseMB) + (haveFallback_ ? denseMB : 0);
+            planChunks();
+            if (jac32_ || !jacAllowed || (needMB <= budget && chunksFit())) break;
         }
+        // Nothing past one binding, ever: the solve goes to the host instead.
+        if (P_.jc_total > 0xFFFFFFFFull || !chunksFit() ||
+            largestOtherBuffer((!useCG_ || haveFallback_) && pairOk, pairEntries) > chunkCapBytes())
+            throw VkError(VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "bundle adjustment: a buffer exceeds the device's " +
+                              std::to_string(chunkCapBytes() >> 20) + " MB binding limit");
+        static std::atomic<bool> saidJac32{false};
+        if (jac32_ && !jacForced && !saidJac32.exchange(true))
+            sfm::slog::diag(sfm::slog::Tag::Map,
+                            "[vk] a solve did not fit in fp64; its Jacobians are stored at fp32 "
+                            "from here on whenever that is so (~%.0f MB, budget %.0f MB)",
+                            needMB, budget);
 
         if (opt_.verbose)
             sfm::slog::diag(sfm::slog::Tag::Map,
-                       "[vk] VRAM estimates: dense %.0f MB (%s Schur), cg %.0f MB (budget %.0f MB)",
-                       denseMB, pairOk ? "pair" : "per-obs", cgMB, budget);
+                       "[vk] VRAM estimates: dense %.0f MB (%s Schur), cg %.0f MB (budget %.0f MB); "
+                       "Jc %.0f MB",
+                       denseMB, pairOk ? "pair" : "per-obs", cgMB, budget,
+                       (double)P_.jc_total * jacSize() / (1024.0 * 1024.0));
         // Say so before the driver does. There is nothing below CG to fall back
         // to -- its footprint is the problem data plus a few vectors -- so this
         // is the point at which the answer is a smaller problem or more memory.
-        const double needMB = (useCG_ ? cgMB : denseMB) + (haveFallback_ ? denseMB : 0);
         if (needMB > budget) {
             if (opt_.over_budget_throws) throw BAOverBudget(needMB, budget);
             sfm::slog::diag(sfm::slog::Tag::Map,
@@ -909,12 +1040,13 @@ private:
         const double n = P_.n_dim, no = P_.num_obs, np = P_.num_points, ni = P_.num_images;
         const double packed = n * (n + 1) / 2;
         double b = 0;
-        b += no * (2 * rs + 12) + 4 * (double)P_.model_obs.size();  // obs + index tables
+        b += no * (2 * (obs32_ ? 4 : rs) + 12) +
+             (obsIdentity_ ? 0 : 4 * (double)P_.model_obs.size());  // obs + index tables
         b += 16 * ni + 16 * (double)(P_.groups.size() + P_.members.size());
         b += 2 * (P_.pose_dim + P_.exts.size() + P_.total_intr) * rs;  // params + backups
         b += 3 * np * rs * 3;                                      // points, backup, Bp0
         b += 4 * (np + 1);
-        b += ((double)P_.jc_total + 8 * no) * rs;                  // Jc, Jp, res
+        b += ((double)P_.jc_total + 8 * no) * (double)jacSize();  // Jc, Jp, res
         b += (9 + 3 + 9) * np * rs;                                // App, Bp, W
         b += 2 * n * rs;                                           // g, y
         if (withDense) {
@@ -1270,12 +1402,14 @@ private:
             for (auto& mr : P_.model_ranges) {
                 Push p;
                 p.f0 = opt_.loss_param;
+                p.u2 = opt_.fix_rotations ? 1 : 0;
                 launch(jacEntry(mr), mr.count, 128, kWJac * wide_, p, atModel(mr));
             }
             ctx_.barrier(cb_);
 
             ctx_.copy(cb_, bBp_, bBp0_, bBp_.size);
             ctx_.barrier(cb_);
+            if (gradOn_) recordGradient();
         }
 
         {
@@ -1300,7 +1434,7 @@ private:
                 launch("y_prep", P_.num_obs, 256, kWYPrep, p, atBase);
                 ctx_.barrier(cb_);
                 p.u0 = P_.num_pair_chunks;
-                const double entries = P_.pair_entries.size() / 2.0;
+                const double entries = (double)pairEntryTotal_;
                 launch(std::string("schur_pair") + schurSuffix_, P_.num_pair_chunks, 1,
                        kWPairEntry * wide_ * wide_ * entries / std::max(1u, P_.num_pair_chunks),
                        p, atBase);
@@ -1513,7 +1647,7 @@ private:
         ctx_.recordDownload(cb_, bCost_, realSize(opt_.real), 0, kDlCost);
         if (path == LinSolve::CG)
             ctx_.recordDownload(cb_, bCgScal_, 8 * realSize(opt_.real), 0, kDlCgScal);
-        if (hasPriors_) {
+        if (mirror_) {
             const VkDeviceSize pb = P_.poses.size() * realSize(opt_.real);
             ctx_.recordDownload(cb_, bPoses_, pb, 0, kDlPoses);
             if (!P_.exts.empty())
@@ -1525,6 +1659,46 @@ private:
     // Offsets into the download staging buffer for the folded readbacks above;
     // the trial poses (and extrinsics) follow when priors are on.
     static constexpr VkDeviceSize kDlCost = 0, kDlCgScal = 64, kDlPoses = 128;
+    // The gradient test's readback, after the poses: every column, then the point max.
+    VkDeviceSize dlGrad() const {
+        const VkDeviceSize end = kDlPoses + (P_.poses.size() + P_.exts.size()) * realSize(opt_.real);
+        return (end + 63) / 64 * 64;
+    }
+
+    // d cost / d column over every observation, before the Schur reduction, and
+    // max |d cost / d point| as float bits, at the point the Jacobian pass evaluated.
+    void recordGradient() {
+        ctx_.fillZero(cb_, bGradCam_);
+        ctx_.fillZero(cb_, bGradPt_);
+        ctx_.barrier(cb_);
+        Push p;
+        p.u0 = P_.num_obs;
+        launch(std::string("grad_cam") + schurSuffix_, P_.num_obs, 256, kWDp * wide_, p, atBase);
+        Push q;
+        q.u0 = P_.num_points;
+        room(kWLaunch + P_.num_points * kWPoint);
+        ctx_.dispatch(cb_, "grad_point_max", (P_.num_points + 255) / 256, q);
+        ctx_.barrier(cb_);
+        const VkDeviceSize gb = (VkDeviceSize)P_.n_dim * realSize(opt_.real);
+        ctx_.recordDownload(cb_, bGradCam_, gb, 0, dlGrad());
+        ctx_.recordDownload(cb_, bGradPt_, 4, 0, dlGrad() + gb);
+    }
+
+    bool gradientConverged() {
+        const uint8_t* st = (const uint8_t*)ctx_.stagingDownloadPtr() + dlGrad();
+        unpackReals(gfull_, st, P_.n_dim, opt_.real);
+        if (hasPriors_)
+            for (uint32_t i = 0; i < P_.pose_dim; i++) gfull_[i] += prior_.gradient()[i];
+        float pm;
+        memcpy(&pm, st + (size_t)P_.n_dim * realSize(opt_.real), 4);
+        gptMax_ = pm;
+        const double gn = sfm::gradientNormParts(P_, hostPoses_.data(), hostExts_.data(),
+                                                 gfull_.data(), gptMax_, opt_.metres_per_unit)
+                              .max();
+        stats_.gradient_norms.push_back(gn);
+        stats_.gradient_stop = gn <= opt_.gradient_tol;
+        return stats_.gradient_stop;
+    }
 
     double readCost() {
         std::vector<double> v;
@@ -1587,6 +1761,40 @@ private:
     // goes indefinite; 1e-8 is still Gauss-Newton to eight digits.
     static constexpr double kMinDamping = 1e-8;
 
+    size_t pairEntryTotal_ = 0;  // P_.pair_entries.size() / 2 at init, which may free it
+    bool jac32_ = false;         // Jc, Jp and the residual stored at fp32 (decidePaths)
+    bool obs32_ = false;         // every observation is a float, kept as one (ba.slang kObs32)
+    bool obsIdentity_ = false;   // model_obs is the identity and not uploaded
+    size_t jacSize() const { return jac32_ ? 4 : realSize(opt_.real); }
+    // Elements per Jc / Jp buffer (ba.slang kJcChunk / kJpChunk), 0 when one
+    // holds them all, and how many of the four bindings each takes.
+    static constexpr uint32_t kMaxJacChunks = 4;
+    uint32_t jcChunk_ = 0, jpChunk_ = 0, nJc_ = 1, nJp_ = 1;
+    uint64_t chunkCapBytes() const { return ctx_.maxBufferBytes(); }
+    void planChunks() {
+        const uint64_t cap = std::min<uint64_t>(chunkCapBytes() / jacSize(), ~0u - 1) & ~63ull;
+        // SS_SFM_BA_CHUNKS=2..4 splits any problem that many ways, for the tests.
+        const char* forced = spirula::env("SFM_BA_CHUNKS");
+        const uint64_t ways = forced ? (uint64_t)std::max(1, std::atoi(forced)) : 1;
+        auto plan = [&](uint64_t n, uint32_t& chunk, uint32_t& count) {
+            const uint64_t per =
+                ways > 1 ? std::min<uint64_t>(cap, ((n + ways - 1) / ways + 63) & ~63ull) : cap;
+            chunk = n <= per ? 0 : (uint32_t)per;
+            count = n <= per ? 1 : (uint32_t)((n + per - 1) / per);
+        };
+        plan(P_.jc_total, jcChunk_, nJc_);
+        plan(6ull * P_.num_obs, jpChunk_, nJp_);
+    }
+    bool chunksFit() const { return nJc_ <= kMaxJacChunks && nJp_ <= kMaxJacChunks; }
+    // The largest buffer init() allocates besides Jc and Jp, in bytes.
+    uint64_t largestOtherBuffer(bool pairTables, uint64_t pairEntries) const {
+        const uint64_t rs = realSize(opt_.real), no = P_.num_obs, np = P_.num_points;
+        uint64_t b = std::max({2 * no * rs, 9 * np * rs, 4 * no});
+        if (!useCG_ || haveFallback_)
+            b = std::max<uint64_t>(b, (uint64_t)P_.n_dim * (P_.n_dim + 1) / 2 * rs);
+        if (pairTables) b = std::max({b, 6 * no * rs, 8 * pairEntries});
+        return b;
+    }
     GpuBuffer bObs_, bObsImage_, bObsPoint_, bImageInfo_, bGroupInfo_, bMemberInfo_;
     GpuBuffer bPoses_, bExts_, bIntr_, bPoints_, bObsRanges_, bModelObs_, bJcOff_;
     GpuBuffer bJp_, bS_, bG_, bApp_, bBp_, bCost_;
@@ -1600,6 +1808,7 @@ private:
     std::string segTop_;                   // the launch() kernel with the most work in cb_
     double segTopWork_ = 0;
     GpuBuffer bBp0_, bJc_, bRes_;
+    GpuBuffer bJcX_[kMaxJacChunks - 1], bJpX_[kMaxJacChunks - 1];  // chunks past the first
     GpuBuffer bPairEntries_, bPairChunks_, bW_, bYp_, bY_;
     GpuBuffer bCamRanges_, bCamObs_, bCamChunks_, bCgR_, bCgZ_, bCgP_, bCgSp_;
     GpuBuffer bCgV_, bCgB_, bCgM_, bCgScal_, bCgPart_, bPrecBlocks_;
@@ -1607,6 +1816,12 @@ private:
     // the parameters it is evaluated at (accepted, and the iteration's trial).
     sfm::PriorAssembler prior_;
     bool hasPriors_ = false;
+    bool absCentres_ = false;
     GpuBuffer bPriorRows_, bPriorCols_, bPriorErow_, bPriorBlk_, bPriorG_;
+    GpuBuffer bGradCam_, bGradPt_;
+    bool gradOn_ = false, mirror_ = false;  // mirror_: host copies of the accepted poses
+    std::vector<double> gfull_;
+    double gptMax_ = 0;
     std::vector<double> hostPoses_, hostExts_, trialPoses_, trialExts_;
+    double trialPrior_ = 0;  // the priors' cost at the trial parameters readTotalCost read
 };

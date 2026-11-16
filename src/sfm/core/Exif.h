@@ -23,6 +23,7 @@
 // exactly as before.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -54,6 +55,7 @@ struct ExifData {
     // GPS, from the separate IFD tag 0x8825 points at. Degrees, signed by the
     // hemisphere ref; altitude negated when GPSAltitudeRef says below sea level.
     bool has_gps = false;
+    bool gps_zero = false;      // a GPS block at 0, 0: written with no fix, so not has_gps
     bool has_alt = false;
     double lat_deg = 0, lon_deg = 0, alt_m = 0;
 
@@ -62,6 +64,14 @@ struct ExifData {
 
 namespace detail {
 
+inline bool seekTo(FILE* f, uint64_t off) {
+#if defined(_WIN32)
+    return _fseeki64(f, (long long)off, SEEK_SET) == 0;
+#else
+    return fseeko(f, (off_t)off, SEEK_SET) == 0;
+#endif
+}
+
 // Bounds-checked little/big-endian reader over the TIFF block. Every accessor
 // returns 0 out of range, so a truncated or hostile file yields empty fields
 // instead of a read past the buffer.
@@ -69,15 +79,35 @@ struct TiffReader {
     const uint8_t* p = nullptr;
     size_t n = 0;
     bool le = true;
+    // Set instead of `p` for a TIFF file, which is read where it is asked for:
+    // its directories often follow megabytes of pixels.
+    FILE* f = nullptr;
+    mutable std::vector<uint8_t> window;
+    mutable size_t window_at = 0;
 
+    const uint8_t* at(size_t o, size_t len) const {
+        if (o > n || len > n - o) return nullptr;
+        if (!f) return p + o;
+        if (o < window_at || o + len > window_at + window.size()) {
+            window.resize(std::max<size_t>(len, std::min<size_t>(4096, n - o)));
+            window_at = o;
+            if (!seekTo(f, o) || std::fread(window.data(), 1, window.size(), f) != window.size()) {
+                window.clear();
+                return nullptr;
+            }
+        }
+        return window.data() + (o - window_at);
+    }
     uint16_t u16(size_t o) const {
-        if (o + 2 > n) return 0;
-        return le ? (uint16_t)(p[o] | (p[o + 1] << 8)) : (uint16_t)((p[o] << 8) | p[o + 1]);
+        const uint8_t* q = at(o, 2);
+        if (!q) return 0;
+        return le ? (uint16_t)(q[0] | (q[1] << 8)) : (uint16_t)((q[0] << 8) | q[1]);
     }
     uint32_t u32(size_t o) const {
-        if (o + 4 > n) return 0;
-        return le ? (uint32_t)(p[o] | (p[o + 1] << 8) | (p[o + 2] << 16) | ((uint32_t)p[o + 3] << 24))
-                  : (uint32_t)(((uint32_t)p[o] << 24) | (p[o + 1] << 16) | (p[o + 2] << 8) | p[o + 3]);
+        const uint8_t* q = at(o, 4);
+        if (!q) return 0;
+        return le ? (uint32_t)(q[0] | (q[1] << 8) | (q[2] << 16) | ((uint32_t)q[3] << 24))
+                  : (uint32_t)(((uint32_t)q[0] << 24) | (q[1] << 16) | (q[2] << 8) | q[3]);
     }
 };
 
@@ -101,7 +131,11 @@ inline bool tiffValue(const TiffReader& r, size_t entry, double& out) {
     if (esz == 0) return false;
     size_t vo = (esz * count <= 4) ? entry + 8 : r.u32(entry + 8);
     switch (type) {
-        case 1: case 7: out = vo < r.n ? r.p[vo] : 0; return vo < r.n;
+        case 1: case 7: {
+            const uint8_t* q = r.at(vo, 1);
+            out = q ? *q : 0;
+            return q != nullptr;
+        }
         case 3: out = r.u16(vo); return true;
         case 4: out = r.u32(vo); return true;
         case 9: out = (int32_t)r.u32(vo); return true;
@@ -139,9 +173,11 @@ inline std::string tiffString(const TiffReader& r, size_t entry) {
     if (count == 0) return {};
     size_t vo = (count <= 4) ? entry + 8 : r.u32(entry + 8);
     if (vo >= r.n) return {};
-    size_t len = std::min((size_t)count, r.n - vo);
-    while (len > 0 && r.p[vo + len - 1] == '\0') len--;
-    std::string s((const char*)r.p + vo, len);
+    size_t len = std::min({(size_t)count, r.n - vo, (size_t)4096});
+    const uint8_t* q = r.at(vo, len);
+    if (!q) return {};
+    while (len > 0 && q[len - 1] == '\0') len--;
+    std::string s((const char*)q, len);
     // Trailing spaces are common ("NIKON CORPORATION   ").
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
     return s;
@@ -170,6 +206,11 @@ inline void parseGpsIfd(const TiffReader& r, size_t off, ExifData& out) {
         }
     }
     if (!has_lat || !has_lon || !lat_ref || !lon_ref) return;
+    // Zeros are what a camera writes with no fix, not a position.
+    if (lat[0] == 0 && lat[1] == 0 && lat[2] == 0 && lon[0] == 0 && lon[1] == 0 && lon[2] == 0) {
+        out.gps_zero = true;
+        return;
+    }
     out.lat_deg = lat[0] + lat[1] / 60.0 + lat[2] / 3600.0;
     out.lon_deg = lon[0] + lon[1] / 60.0 + lon[2] / 3600.0;
     if (lat_ref == 'S' || lat_ref == 's') out.lat_deg = -out.lat_deg;
@@ -204,8 +245,10 @@ inline void parseIfd(const TiffReader& r, size_t off, ExifData& out, int depth) 
             case 0x829A: if (tiffValue(r, e, v) && v > 0) out.exposure_time = v; break;
             case 0x829D: if (tiffValue(r, e, v) && v > 0) out.f_number = v; break;
             case 0x8827: if (tiffValue(r, e, v) && v > 0) out.iso = v; break;
-            case 0x8831: case 0x8832: case 0x8833:  // SOS / REI / ISOSpeed
-                if (out.iso == 0 && tiffValue(r, e, v) && v > 0) out.iso = v;
+            // SOS / REI / ISOSpeed, also where ISOSpeedRatings stops at 65535
+            case 0x8831: case 0x8832: case 0x8833:
+                if ((out.iso == 0 || out.iso >= 65535) && tiffValue(r, e, v) && v > 0)
+                    out.iso = v;
                 break;
             case 0x9201: if (tiffValue(r, e, v)) out.shutter_apex = v; break;
             case 0x9202: if (tiffValue(r, e, v)) out.aperture_apex = v; break;
@@ -307,12 +350,55 @@ inline std::string readXmpPacket(const std::string& path) {
     return std::string((const char*)seg.data() + sizeof kSig, seg.size() - sizeof kSig);
 }
 
+// A TIFF file's first directory is its EXIF block. Orientation is dropped: no
+// reader turns a TIFF's pixels, so all of them take the stored ones, as for a PNG.
+inline ExifData readTiffFileExif(const std::string& path) {
+    ExifData out;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return out;
+    uint8_t h[8];
+    const bool tiff = std::fread(h, 1, 8, f) == 8 &&
+                      ((h[0] == 'I' && h[1] == 'I' && h[2] == 42 && h[3] == 0) ||
+                       (h[0] == 'M' && h[1] == 'M' && h[2] == 0 && h[3] == 42));
+    long long size = -1;
+#if defined(_WIN32)
+    if (tiff && _fseeki64(f, 0, SEEK_END) == 0) size = _ftelli64(f);
+#else
+    if (tiff && fseeko(f, 0, SEEK_END) == 0) size = (long long)ftello(f);
+#endif
+    if (size > 8) {
+        detail::TiffReader r;
+        r.f = f;
+        r.n = (size_t)size;
+        r.le = h[0] == 'I';
+        const uint32_t ifd0 = r.u32(4);
+        if (ifd0 >= 8 && ifd0 < r.n) {
+            detail::parseIfd(r, ifd0, out, 0);
+            out.orientation = 1;
+            out.valid = true;
+        }
+    }
+    fclose(f);
+    return out;
+}
+
 // Read EXIF from an image file. Anything without one comes back invalid, which
 // every caller treats as "no prior".
 inline ExifData readExif(const std::string& path) {
     const std::vector<uint8_t> seg = readExifSegment(path);
-    if (seg.size() <= 6) return ExifData();
+    if (seg.size() <= 6) return readTiffFileExif(path);
     return parseExifTiff(seg.data() + 6, seg.size() - 6);
+}
+
+// Is `name`, a '/'-separated path under the image directory, under one of
+// `prefixes`? "" covers every image. What SfmConfig::exif_gps_off and
+// exif_attitude_off are matched with.
+inline bool exifPrefixCovers(const std::vector<std::string>& prefixes, const std::string& name) {
+    for (const std::string& p : prefixes)
+        if (p.empty() || (name.size() > p.size() && name.compare(0, p.size(), p) == 0 &&
+                          name[p.size()] == '/'))
+            return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +535,82 @@ inline void exifClearFocal(uint8_t* tiff, size_t size) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+// An APP1 Exif payload ("Exif\0\0" + a little-endian TIFF block) that records
+// a capture exposure and nothing else. A value that is unknown (<= 0) or that
+// its tag cannot hold is left out, not clamped. Empty when none is left.
+inline std::vector<uint8_t> exifExposureSegment(double exposure_time, double f_number,
+                                                double iso) {
+    struct Entry { uint16_t tag, type; uint32_t value; };
+    std::vector<Entry> entries;
+    std::vector<uint32_t> rationals;
+    auto rational = [&](uint16_t tag, double v) {
+        if (!(v >= 2.5e-10 && v < 4e9)) return;   // 1/4e9 .. 4e9; NaN fails too
+        uint32_t num, den;
+        const double n = std::round(1.0 / v);
+        if (v < 1 && n <= 4e9 && std::fabs(1.0 / n - v) <= 1e-3 * v) {
+            num = 1;
+            den = (uint32_t)n;
+        } else {
+            den = 1000000;
+            while (den > 1 && v * den > 4e9) den /= 10;
+            num = (uint32_t)std::round(v * den);
+            uint32_t a = num, b = den;
+            while (b) { const uint32_t r = a % b; a = b; b = r; }
+            if (a > 1) { num /= a; den /= a; }
+        }
+        entries.push_back({tag, 5, (uint32_t)rationals.size()});
+        rationals.push_back(num);
+        rationals.push_back(den);
+    };
+    rational(0x829A, exposure_time);
+    rational(0x829D, f_number);
+    // ISOSpeedRatings 65535 reads as "65535 or more".
+    const double s = std::round(iso);
+    if (s >= 1 && s < 65535) entries.push_back({0x8827, 3, (uint32_t)s});
+    if (entries.empty()) return {};
+    entries.push_back({0x9000, 7, 0x30333230});   // ExifVersion "0230"
+
+    std::vector<uint8_t> out = {'E', 'x', 'i', 'f', 0, 0};
+    auto u16 = [&](uint32_t v) { out.push_back((uint8_t)v); out.push_back((uint8_t)(v >> 8)); };
+    auto u32 = [&](uint32_t v) { u16(v & 0xFFFF); u16(v >> 16); };
+    const uint32_t exif_ifd = 8 + 2 + 12 + 4;
+    const uint32_t data = exif_ifd + 2 + 12 * (uint32_t)entries.size() + 4;
+    out.insert(out.end(), {'I', 'I'});
+    u16(42);
+    u32(8);
+    u16(1);
+    u16(0x8769); u16(4); u32(1); u32(exif_ifd);
+    u32(0);
+    u16((uint32_t)entries.size());
+    for (const Entry& e : entries) {
+        u16(e.tag);
+        u16(e.type);
+        u32(e.type == 7 ? 4 : 1);
+        u32(e.type == 5 ? data + 4 * e.value : e.value);
+    }
+    u32(0);
+    for (uint32_t v : rationals) u32(v);
+    return out;
+}
+
+// `segment`, an APP1 payload with its signature, spliced into `jpeg` behind
+// the SOI. False with `jpeg` untouched when it is not a JPEG or the segment
+// is past what a marker's 16-bit length addresses.
+inline bool jpegInsertApp1(std::vector<uint8_t>& jpeg, const std::vector<uint8_t>& segment) {
+    if (jpeg.size() < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 || segment.empty() ||
+        segment.size() + 2 > 65535)
+        return false;
+    const size_t len = segment.size() + 2;
+    const uint8_t head[4] = {0xFF, 0xE1, (uint8_t)(len >> 8), (uint8_t)len};
+    jpeg.insert(jpeg.begin() + 2, segment.begin(), segment.end());
+    jpeg.insert(jpeg.begin() + 2, head, head + 4);
+    return true;
+}
+
 // The focal length in pixels of the *stored* image, or 0 if EXIF cannot say.
 // COLMAP's rules (sensor/bitmap.cc ExifFocalLength), in the same order:
 //
@@ -490,16 +652,29 @@ inline double exifFocalPx(const ExifData& e, int width, int height) {
     return 0;
 }
 
+enum ExifExposurePart : unsigned { kExifTime = 1, kExifAperture = 2, kExifIso = 4 };
+
+// Which of the three exposure factors the file records.
+inline unsigned exifExposureParts(const ExifData& e) {
+    if (!e.valid) return 0;
+    return (e.exposure_time > 0 || std::isfinite(e.shutter_apex) ? kExifTime : 0) |
+           (e.f_number > 0 || std::isfinite(e.aperture_apex) ? kExifAperture : 0) |
+           (e.iso > 0 ? kExifIso : 0);
+}
+
 // Relative capture exposure in EV stops, log2(t / N^2 * ISO), preferring the
-// direct tags over their APEX forms. A missing component counts as 1; false
-// only when the file records none of the three.
-inline bool exifExposureEv(const ExifData& e, double& ev) {
+// direct tags over their APEX forms. Factors missing or outside `parts` count
+// as 1; false when no factor is left.
+inline bool exifExposureEv(const ExifData& e, double& ev,
+                           unsigned parts = kExifTime | kExifAperture | kExifIso) {
     if (!e.valid) return false;
-    double t = e.exposure_time > 0 ? e.exposure_time
+    double t = !(parts & kExifTime) ? 0
+             : e.exposure_time > 0 ? e.exposure_time
              : std::isfinite(e.shutter_apex) ? std::exp2(-e.shutter_apex) : 0;
-    double N = e.f_number > 0 ? e.f_number
+    double N = !(parts & kExifAperture) ? 0
+             : e.f_number > 0 ? e.f_number
              : std::isfinite(e.aperture_apex) ? std::exp2(e.aperture_apex / 2) : 0;
-    double s = e.iso;
+    double s = (parts & kExifIso) ? e.iso : 0;
     if (t <= 0 && N <= 0 && s <= 0) return false;
     double rel = (t > 0 ? t : 1) / ((N > 0 ? N : 1) * (N > 0 ? N : 1)) * (s > 0 ? s : 1);
     if (!(rel > 0) || !std::isfinite(rel)) return false;

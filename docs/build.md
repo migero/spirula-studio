@@ -25,7 +25,7 @@ Always build through the dev scripts.
 | `SsOptions.cmake` | options (`SS_BUILD_GUI`, `SS_DEBUG_SYMBOLS`, …), backend selection, tree paths (`SS_ROOT`, `SS_CSRC`, …) |
 | `SsSources.cmake` | `ss_collect_sources()` — expands `sources.txt` with `CONFIGURE_DEPENDS` |
 | `SsBackendCuda.cmake` | Torch probe, CUDA arch detection, flags, the `csrc` library, CUDA-side parity tools |
-| `SsBackendVulkan.cmake` | portable engine object lib, slangc + SPIR-V embed, `ss_backend_vulkan`, the Vulkan-side tests |
+| `SsBackendVulkan.cmake` | portable engine static library, slangc + SPIR-V embed, `ss_backend_vulkan`, the Vulkan-side tests |
 | `SsSlang.cmake` | `ss_find_slangc()` — pinned version, PATH lookup, fetch on miss |
 | `SsEmbed.cmake` | `ss_embed_file()` — bake a file into a byte-array header |
 | `SsApps.cmake` | the `spirula` executable — every tool the build has, in one binary (backend-agnostic) |
@@ -79,28 +79,32 @@ from one checkout and neither reconfigures the other.
 | `SS_CUDA_EMBED_PTX` | `OFF` | embed PTX beside the cubin in the CUDA fatbin. Only buys JIT onto an architecture the binary was not built for, and costs about a third of every object; the build already detects the local GPU. Turn on for a redistributable binary. |
 | `SS_SLANGC` | *(empty)* | path to a `slangc` to use; empty means find on PATH and fetch the pinned release on miss/mismatch |
 | `SS_BUILD_SFM` | `ON` for `vulkan`, `OFF` for `cuda` | `ss_sfm` + `spirula sfm` + `sfm_*_test`. Vulkan-only; a CUDA build can opt in if the Vulkan SDK is present. |
-| `SS_BUILD_SAM` | `ON` for `vulkan`, `OFF` for `cuda` | `ss_nn` + `ss_sam` + `spirula sam` + `nn_ops_test` / `sam_pipeline_test`, and the GUI's in-process masking. Same rule as SfM. |
-| `SS_ENABLE_PATENTED` | `OFF` | `ss_video` — container demux + `VK_KHR_video_decode_*`, and the `VK_KHR_video_encode_*` encoder behind `spirula encode`. **Read the note below before turning it on.** |
+| `SS_BUILD_SAM` | `ON` for `vulkan`, `OFF` for `cuda` | `ss_nn` + `ss_sam` + `spirula sam` + `nn_ops_test` / `sam_pipeline_test`, the GUI's in-process masking, and LPIPS in the eval pass (`ss_lpips`). Same rule as SfM. |
+| `SS_ENABLE_PATENTED` | `OFF` | `ss_video` — container demux (HEIF stills included) + `VK_KHR_video_decode_*`, and the `VK_KHR_video_encode_*` encoder behind `spirula encode`. **Read the note below before turning it on.** |
 | `SS_SFM_REALS` / `SS_SFM_LOSSES` | all | trim the bundle-adjustment shader variant matrix while iterating (`src/sfm/README.md`) |
 | `SS_CHECK_COMMENTS` | `ON` | run the comment-length lint on every build ([Lints](#lints)) |
 
 ### `SS_ENABLE_PATENTED`
 
 Off by default, and deliberately. This repository is GPLv3, and `src/video/` —
-the H.264 / H.265 / AV1 bitstream parsers, the Vulkan Video decode driver and
-the H.264 / H.265 encoder — is the one part of it carrying third-party patent
-exposure (H.264/H.265 via MPEG LA and Access Advance, AV1 via the claims
-asserted against AOMedia). With it off, that directory is neither compiled nor
+the H.264 / H.265 / AV1 bitstream parsers, the HEIF container reader, the
+Vulkan Video decode driver and the H.264 / H.265 encoder — is the one part of
+it carrying third-party patent exposure (H.264/H.265 via MPEG LA and Access
+Advance, AV1 via the claims asserted against AOMedia, and HEIF's container has
+claims of its own). With it off, that directory is neither compiled nor
 linked, and everything that wanted it falls back to an external **ffmpeg**:
 `spirula sam extract` and the GUI extract frames with ffmpeg (the GUI tells
-the user why), `spirula sam video` says so and exits, and the render mode
-encodes its videos with ffmpeg (or writes frames when there is none).
+the user why), `spirula sam video` says so and exits, the render mode encodes
+its videos with ffmpeg (or writes frames when there is none), and HEIC photos
+are converted to JPEG by ffmpeg 7.0 or newer — without their EXIF, so SfM
+starts with no focal-length prior.
 
 Turning it on buys in-process GPU decoding and encoding: roughly 15× faster
 frame extraction (a 127-second 1080p30 clip in ten seconds rather than
-minutes), `spirula encode` for the render mode's videos, and no ffmpeg to
-install. A device without a video queue -- MoltenVK on every Mac -- decodes
-with ffmpeg even then.
+minutes), `spirula encode` for the render mode's videos, and no FFmpeg
+dependency for inputs supported by the device. Devices without a video queue
+(including MoltenVK on macOS) and unsupported codec profiles still decode
+with external FFmpeg.
 Nothing else in the build changes.
 
 If you distribute binaries, decide for your jurisdiction and your users before
@@ -108,7 +112,7 @@ shipping one built with it on.
 
 ## Lints
 
-Six checks guard the source. Each fails the build, and each skips itself when
+Seven checks guard the source. Each fails the build, and each skips itself when
 its interpreter is missing — none of them is a dependency of a fresh checkout.
 
 | check | what it refuses |
@@ -119,13 +123,14 @@ its interpreter is missing — none of them is a dependency of a fresh checkout.
 | `tools/check_comments.sh` | a comment citing a file that is not in the tree |
 | `tools/check_file_macro.sh` | a bare `__FILE__` where [`SS_FILE`](../src/core/SourcePath.h) belongs |
 | `tools/check_comment_length.py` | a comment block over the [budget](../AGENTS.md#budget) |
+| `tools/check_winmacro.py` | an identifier `<windows.h>` defines as a macro ([`tools/windows_macros.txt`](../tools/windows_macros.txt)) |
 
-The first five run from `build_develop.bash` only. The comment-length check
-also runs from CMake (`cmake/SsChecks.cmake`) as the `ss_check_comment_length`
-target, which every other target is made to depend on — so a bare `ninja`, a
-`make`, or `cmake --build build --target spirula` fails on it just as the dev
-scripts do. `build_develop.bat` runs it directly, and the standalone viewer
-build includes the same module.
+The first five run from `build_develop.bash` only. The last two also run from
+CMake (`cmake/SsChecks.cmake`) as the `ss_check_comment_length` and
+`ss_check_winmacro` targets, which every other target is made to depend on — so
+a bare `ninja`, a `make`, or `cmake --build build --target spirula` fails on
+them just as the dev scripts do. `build_develop.bat` runs them directly, and
+the standalone viewer build includes the same module.
 
 ### The comment-length check
 
@@ -144,6 +149,31 @@ cmake -B build_vulkan -DSS_CHECK_COMMENTS=OFF  # or for a whole build tree
 
 Neither escape hatch is a fix: the comment is still over budget, and the next
 person to touch that file inherits it.
+
+### The `<windows.h>` macro check
+
+`<windows.h>` turns plain words into macros: `near` and `far` expand to
+nothing, `small` to `char`, `ERROR` to `0`, `GetObject` to `GetObjectW`. A
+variable, enumerator or method by one of those names breaks only the Windows
+build, or silently changes it. The check lexes every C-like file in the
+checkout, tracked or not, apart from build trees, `outputs/`, `src/external/`
+and dot-directories, and flags each name in
+[`tools/windows_macros.txt`](../tools/windows_macros.txt) outside a comment or a
+literal. A function-like macro such as `RGB` counts only when `(` follows it or
+the name is `#define`d, so an enumerator `RGB` passes.
+
+Three things are exempt: a branch only Windows compiles (`#ifdef _WIN32`,
+`#ifdef _MSC_VER`), where Win32 code spells `TRUE` and `INFINITE` on purpose
+and the Windows compiler sees every line; a branch Windows never compiles
+(`#ifndef _WIN32`, `#ifdef __APPLE__`); and Slang and Objective-C++ files,
+which never meet the header. The check takes about half a second and has no
+skip switch: rename the identifier. A name added to the list should come from
+the SDK headers, as the list's header describes, not from memory.
+
+A `cannot lex` or `unbalanced` report means the lexer lost its place. Either
+the file has a syntax error, or `tools/check_winmacro.py` needs a fix. It keeps
+only the first branch of an `#if` when counting brackets, and evaluates nothing
+else of the preprocessor.
 
 ## Targets
 

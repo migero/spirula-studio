@@ -430,16 +430,19 @@ std::string SfmConfig::finalize(uint32_t cmd) {
     mapper.max_reproj_error = max_error;
     // mapper.sequence_window = overlap;
 
+    if (!colorspace::parse_exposure(image_exposure, exposure))
+        return "bad --image-exposure '" + image_exposure + "' (auto, or a number of stops)";
+
     if (features != "sift" && !isAlikedType(features) && !isLomaType(features))
         return "unknown --features '" + features +
                "' (sift, aliked-n16rot, aliked-n32, loma-b128 or loma-b)";
     if (matcher != "bruteforce" && !isLearnedMatcher(matcher))
         return "unknown --matcher '" + matcher +
-               "' (bruteforce, lightglue or loma-b128)";
+               "' (bruteforce, lightglue, flexglue or loma-b128)";
     // Matching SIFT with a learned matcher would run and return nonsense.
     // Only `auto` can check it here; `match` reads features off disk, so its
     // guard is on the descriptors themselves, in LearnedMatcher.cpp.
-    if ((cmd & (CMD_AUTO | CMD_EXTRACT)) && isLearnedMatcher(matcher) &&
+    if ((cmd & (CMD_AUTO | CMD_EXTRACT)) && matcherReadsDescriptors(matcher) &&
         !isAlikedType(features) && !isLomaType(features))
         return "--matcher " + matcher + " needs learned descriptors; add "
                "--features aliked-n16rot";
@@ -447,7 +450,7 @@ std::string SfmConfig::finalize(uint32_t cmd) {
     // and a LoMa matcher reads DeDoDe's, and each would run on the other's and
     // return nonsense rather than fail.
     if ((cmd & (CMD_AUTO | CMD_EXTRACT)) && isLomaType(matcher) != isLomaType(features) &&
-        isLearnedMatcher(matcher))
+        matcherReadsDescriptors(matcher))
         return "--matcher " + matcher + " and --features " + features +
                " are different frontends; a learned matcher only reads the "
                "descriptors it was trained on";
@@ -461,17 +464,13 @@ std::string SfmConfig::finalize(uint32_t cmd) {
                std::to_string(lomaDescriptorDim(features)) + "-D ones";
     // Two metric references would each claim the gauge, and the fit would be
     // whichever the code happened to try first.
-    const bool gps = metric_gps != "none";
+    // `auto` stands down beside a positions file and without images or telemetry.
+    const bool gps = metricGps();
     if (!metric_positions.empty() && gps)
         return "--metric-positions and --metric-gps are two references for one "
                "gauge; pass one";
     if (gps && image_dir.empty() && !(cmd & CMD_AUTO))
         return "--metric-gps reads each image's EXIF, so it needs --images";
-    // GPS is metres-accurate and a positions file is usually centimetres, so
-    // one default cannot serve both; 0 means "the one for this source". With
-    // neither, a video's own track still needs one, and it is GPS-grade.
-    if (metric_max_error == 0)
-        metric_max_error = (!metric_positions.empty() && !gps) ? 0.5 : 5.0;
     if (!telemetry.empty()) {
         bool listed = false;
         for (const TelemetryInput& t : telemetry_inputs)
@@ -481,6 +480,10 @@ std::string SfmConfig::finalize(uint32_t cmd) {
 
     lightglue.device = device;
     loma.device = loma_match.device = device;
+    flexglue.gamut = image_gamut;
+    flexglue.is_linear = image_is_linear;
+    flexglue.exposure = exposure;
+    flexglue.apply_exif_orientation = exif_orientation == "apply";
     if (max_image_size <= 0) max_image_size = defaultMaxImageSize(features);
 
     sift.device = match.device = prefilter.device = mapper.device = device;
@@ -489,7 +492,7 @@ std::string SfmConfig::finalize(uint32_t cmd) {
     mapper.threads = threads;
     const bool v = !quiet;
     sift.verbose = mapper.verbose = manager.verbose = merge.verbose = aliked.verbose = v;
-    lightglue.verbose = loma.verbose = loma_match.verbose = v;
+    lightglue.verbose = loma.verbose = loma_match.verbose = flexglue.verbose = v;
 
     // Scoring problems are ~1/32 the size of full matching, so the selection
     // pass batches at least as many pairs per submit as the matcher does.
@@ -558,7 +561,8 @@ std::string SfmConfig::resolveDevice() {
     }
     sift.device_selector = match.device_selector = prefilter.device_selector =
         mapper.device_selector = aliked.device_selector = lightglue.device_selector =
-            loma.device_selector = loma_match.device_selector = device_selector;
+            loma.device_selector = loma_match.device_selector = flexglue.device_selector =
+                device_selector;
     if (!device_selector.empty())
         sfm::slog::diag(sfm::slog::Tag::Device, "[gpu] running on %s",
                         device_selector.c_str());
@@ -605,6 +609,12 @@ bool signatureRelevant(const char* name) {
     return true;
 }
 
+// Left out while unset, so features extracted before the flag existed still
+// match a run that does not use it.
+bool signatureOmitsUnset(const char* name) {
+    return std::strcmp(name, "image-exposure") == 0;
+}
+
 }  // namespace
 
 std::string stageSignature(const SfmConfig& cfg, uint32_t cmd) {
@@ -617,7 +627,8 @@ std::string stageSignature(const SfmConfig& cfg, uint32_t cmd) {
         }
     };
 #define SFM_SIG_FIELD(member, name, cmds, tier, group, lo, hi, choices, help)   \
-    if (((uint32_t)(cmds) & cmd) && (tier) != Tier::Alias && signatureRelevant(name)) \
+    if (((uint32_t)(cmds) & cmd) && (tier) != Tier::Alias && signatureRelevant(name) && \
+        !(signatureOmitsUnset(name) && valueString(cfg.member) == "none"))              \
         out += std::string(name) + "=" + valueString(cfg.member) + "\n";
     SFM_CONFIG_FIELDS(SFM_SIG_FIELD)
 #undef SFM_SIG_FIELD
@@ -642,12 +653,36 @@ std::string stageSignature(const SfmConfig& cfg, uint32_t cmd) {
             out += "\n";
         }
     }
+    // Verification reads the gyro and GPS proposes pairs. Only what is held
+    // back is listed, so a state matched before the switches existed still fits.
+    if (cmd & (CMD_MATCH | CMD_MAP)) {
+        for (const TelemetryInput& t : cfg.telemetry_inputs)
+            if (!t.imu || !t.gps)
+                out += "telemetry " + t.prefix + (t.imu ? "" : " no-imu") + (t.gps ? "" : " no-gps") +
+                       "\n";
+        for (const std::string& p : cfg.exif_gps_off) out += "exif-gps-off " + p + "\n";
+    }
     // A sequence adds its temporal window to the pair list.
     if (cmd & (CMD_MATCH | CMD_MAP))
         for (const SequenceDef& d : cfg.sequences) {
             out += "sequence ";
             for (size_t m = 0; m < d.members.size(); m++)
                 out += (m ? "," : "") + d.members[m];
+            out += "\n";
+        }
+    // A rig adds its mates to the pairs that verified (sfm/feature/RigPairs.h):
+    // which images share a frame, and which way each lens faces.
+    if ((cmd & CMD_MAP) || ((cmd & CMD_MATCH) && cfg.rig_pairs))
+        for (const RigDef& d : cfg.rigs) {
+            out += "rig " + d.kind + ":";
+            for (size_t c = 0; c < d.captures.size(); c++)
+                out += (c ? "," : "") + d.captures[c];
+            for (const RigMemberDef& m : d.members) {
+                out += " " + m.prefix;
+                if (!m.has_ext) continue;
+                out += "=";
+                appendParams(std::vector<double>(m.ext.R.begin(), m.ext.R.end()));
+            }
             out += "\n";
         }
     return out;

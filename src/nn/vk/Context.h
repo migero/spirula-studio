@@ -31,6 +31,7 @@
 
 #include "core/SourcePath.h"
 #include "core/VulkanDeviceSelection.h"
+#include "core/VulkanMemoryBudget.h"
 
 namespace nn {
 namespace vk {
@@ -104,6 +105,7 @@ public:
 
     const VkPhysicalDeviceMemoryProperties& memoryProps() const { return mem_props_; }
     const VkPhysicalDeviceLimits&           limits()      const { return limits_; }
+    spirula::vkmemory::Budget memoryBudget() const;
 
     // Feature flags resolved at device creation.
     bool     hasSubgroupSizeControl() const { return subgroup_size_control_; }
@@ -127,6 +129,10 @@ public:
     // to address past 4 GiB. Contained the same way the coop-matrix module is.
     bool               hasInt64()      const { return int64_; }
 
+    // VK_EXT_metal_objects (MoltenVK): allocations and the stream's timeline
+    // can be shared with Metal. Only nn/vk/MetalInterop.mm uses it.
+    bool               hasMetalObjects() const { return metal_objects_; }
+
     // Video decode support, resolved at device creation. `videoQueueFamily()`
     // is UINT32_MAX when unavailable; `videoUnavailableReason()` then explains
     // why, for the error video/VideoDecoder.cpp raises.
@@ -141,6 +147,11 @@ public:
     VkQueue     encodeQueue()             const { return encode_queue_; }
     uint32_t    encodeCodecs()            const { return encode_codec_ops_; }
     const std::string& encodeUnavailableReason() const { return encode_reason_; }
+
+    // A transfer-only queue family (a DMA engine) where the device has one;
+    // UINT32_MAX otherwise, or with SS_NN_TRANSFER_QUEUE=0. vk/Transfer.h.
+    uint32_t    transferFamily()          const { return transfer_family_; }
+    VkQueue     transferQueue()           const { return transfer_queue_; }
 
     // Loaded per-device entry points for the extensions we use dynamically.
     // (Vulkan-Headers ships the prototypes but not all loaders export them.)
@@ -180,6 +191,8 @@ private:
     uint32_t  encode_queue_family_ = UINT32_MAX;
     uint32_t  encode_codec_ops_ = 0;
     std::string encode_reason_ = "not requested";
+    VkQueue   transfer_queue_ = VK_NULL_HANDLE;
+    uint32_t  transfer_family_ = UINT32_MAX;
 
     VkPhysicalDeviceMemoryProperties mem_props_{};
     VkPhysicalDeviceLimits           limits_{};
@@ -188,8 +201,10 @@ private:
     bool     subgroup_size_control_ = false;
     uint32_t preferred_subgroup_ = 32;
     bool     profiling_ = false;
+    bool     memory_budget_ = false;
 
     bool        int64_ = false;
+    bool        metal_objects_ = false;
     bool        coopmat_ = false;
     std::string coopmat_reason_ = "not probed";
 };

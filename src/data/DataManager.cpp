@@ -5,8 +5,13 @@
 
 #include "core/DistanceTransform.h"
 #include "core/ExrImage.h"
+#include "core/HardwareThreads.h"
 #include "core/ImageOrient.h"
+#include "core/TiffImage.h"
+#include "data/DownscaleCache.h"
 #include "data/ImageProbe.h"
+#include "data/ResolutionSchedule.h"
+#include "data/SourceCamera.h"
 #include "i18n/catalog/Data.h"
 
 #include "external/stb_image.h"
@@ -39,6 +44,10 @@ using spirula::i18n::format;
 // Small utilities
 // ===========================================================================
 namespace {
+
+// Pixels one warp pass may render. A 5.7K panorama's six faces stay one pass;
+// a 120 MP one's faces go one at a time.
+constexpr int64_t kWarpPassPixelBudget = (int64_t)1 << 24;
 
 // Why a decode failed, for a message a user reads. stbi_failure_reason() is
 // a global every decode thread writes, so a missing file -- the common case,
@@ -188,6 +197,7 @@ private:
 struct SubBatchSpec {
     int32_t              group = 0;   // index into the train IndexGroup vector
     std::vector<int32_t> picks;       // dataset-global image indices
+    int32_t              divisor = 1; // progressive resolution of its epoch
 };
 // One optimizer step = one or more homogeneous sub-batches. Most steps hold a
 // single sub-batch; cross-group remainder packing produces multi-sub-batch
@@ -325,6 +335,17 @@ inline void cpu_nearest_resize_u8(const uint8_t* src, int sh, int sw,
 }
 
 
+// One cached RGB row (sh x sw) area-filtered into dst (dh x dw), in its own dtype.
+inline void resize_rgb_row(const uint8_t* src, int sh, int sw, uint8_t* dst, int dh, int dw,
+                           PixelDType dt) {
+    if (dt == PixelDType::FLOAT32)
+        cpu_resize<float, 3>((const float*)src, sh, sw, (float*)dst, dh, dw);
+    else if (dt == PixelDType::UINT16)
+        cpu_resize<uint16_t, 3>((const uint16_t*)src, sh, sw, (uint16_t*)dst, dh, dw);
+    else
+        cpu_resize<uint8_t, 3>(src, sh, sw, dst, dh, dw);
+}
+
 // Modality decoders. `dst_h` / `dst_w` are the BATCH-slot shape (= group
 // shape); when the file is smaller it is upsampled (nearest for mask,
 // bilinear for depth / normal). The 1x1 mask case is a degenerate
@@ -396,9 +417,60 @@ std::vector<T> composite_over(const T* rgba, size_t n, const float over[3]) {
     return out;
 }
 
-// `decode_threads` is what an EXR may use: 1 on the worker pool, which is
-// already 16 wide, and every core for a lone image the viewer asked for.
-// `over`, when set, composites an 8- or 16-bit file's alpha onto that colour.
+// `src` (w x h, RGB) turned by `turns_cw` and fitted to the camera in `dst`.
+template <typename T>
+void place_rgb(const std::string& path, const T* src, int w, int h, int turns_cw,
+               int expected_h, int expected_w, uint8_t* dst) {
+    std::vector<T> turned;
+    turn_decoded(src, w, h, 3, turns_cw, turned);
+    if (w == expected_w && h == expected_h) {
+        std::memcpy(dst, src, (size_t)w * h * 3 * sizeof(T));
+    } else {
+        _warn_rgb_dim_mismatch_once(path, w, h, expected_w, expected_h);
+        cpu_resize<T, 3>(src, h, w, (T*)dst, expected_h, expected_w);
+    }
+}
+
+// RGBA composited onto `over` when it is set, RGB as it is otherwise.
+template <typename T>
+void place_rgb_over(const std::string& path, const T* px, int w, int h, const float* over,
+                    int turns_cw, int expected_h, int expected_w, uint8_t* dst) {
+    std::vector<T> flat;
+    if (over) {
+        flat = composite_over(px, (size_t)w * h, over);
+        px = flat.data();
+    }
+    place_rgb(path, px, w, h, turns_cw, expected_h, expected_w, dst);
+}
+
+// The stb_image formats, from `mem` when it is set and from `path` otherwise.
+void decode_stbi_rgb_into(const std::string& path, const std::vector<uint8_t>* mem,
+                          int expected_h, int expected_w, PixelDType dtype, uint8_t* dst,
+                          int turns_cw, const float* over)
+{
+    int w, h, ch;
+    const int want = over ? 4 : 3;
+    const int len = mem ? (int)mem->size() : 0;
+    if (dtype == PixelDType::UINT16) {
+        stbi_us* img = mem ? stbi_load_16_from_memory(mem->data(), len, &w, &h, &ch, want)
+                           : stbi_load_16(path.c_str(), &w, &h, &ch, want);
+        if (!img) throw std::runtime_error(decode_failure(path));
+        place_rgb_over(path, img, w, h, over, turns_cw, expected_h, expected_w, dst);
+        stbi_image_free(img);
+    } else if (dtype == PixelDType::UINT8) {
+        stbi_uc* img = mem ? stbi_load_from_memory(mem->data(), len, &w, &h, &ch, want)
+                           : stbi_load(path.c_str(), &w, &h, &ch, want);
+        if (!img) throw std::runtime_error(decode_failure(path));
+        place_rgb_over(path, img, w, h, over, turns_cw, expected_h, expected_w, dst);
+        stbi_image_free(img);
+    } else {
+        throw std::runtime_error("DataManager: unsupported RGB pixel type for '" + path + "'");
+    }
+}
+
+// `decode_threads` is what an EXR or TIFF may use: 1 on the worker pool, which
+// is already 16 wide, and every core for a lone image the viewer asked for.
+// `over`, when set, composites the file's alpha onto that colour.
 void decode_rgb_into(const std::string& path,
                      int expected_h, int expected_w,
                      PixelDType dtype,
@@ -407,62 +479,51 @@ void decode_rgb_into(const std::string& path,
                      int decode_threads = 1,
                      const float* over = nullptr)
 {
-    int w, h, ch;
+    if (tiff::is_tiff(path)) {
+        tiff::Info info;
+        tiff::Options opt;
+        if (dtype == PixelDType::FLOAT32) over = nullptr;
+        opt.channels = over ? 4 : 3;
+        opt.threads = decode_threads;
+        std::vector<uint8_t> px;
+        const std::string err = tiff::decode(path, opt, info, px);
+        if (!err.empty())
+            throw std::runtime_error(decode_failure(path) + " (" + err + ")");
+        const int w = info.width, h = info.height;
+        if (dtype == PixelDType::FLOAT32 && info.sample == tiff::Sample::F32)
+            place_rgb(path, (const float*)px.data(), w, h, turns_cw, expected_h, expected_w, dst);
+        else if (dtype == PixelDType::UINT16 && info.sample == tiff::Sample::U16)
+            place_rgb_over(path, (const uint16_t*)px.data(), w, h, over, turns_cw,
+                           expected_h, expected_w, dst);
+        else if (dtype == PixelDType::UINT8 && info.sample == tiff::Sample::U8)
+            place_rgb_over(path, px.data(), w, h, over, turns_cw, expected_h, expected_w, dst);
+        else
+            throw std::runtime_error(decode_failure(path));   // rewritten since the probe
+        return;
+    }
     if (dtype == PixelDType::FLOAT32) {
         exr::Info info;
         exr::Options opt;
         opt.threads = decode_threads;
+        opt.channels = over ? 4 : 3;
         std::vector<float> px;
         const std::string err = exr::decode(path, opt, info, px);
         if (!err.empty())
             throw std::runtime_error(decode_failure(path) + " (" + err + ")");
-        const float* src = px.data();
-        std::vector<float> turned;
-        w = info.width;
-        h = info.height;
-        turn_decoded(src, w, h, 3, turns_cw, turned);
-        if (w == expected_w && h == expected_h) {
-            std::memcpy(dst, src, (size_t)w * h * 3 * sizeof(float));
-        } else {
-            _warn_rgb_dim_mismatch_once(path, w, h, expected_w, expected_h);
-            cpu_resize<float, 3>(src, h, w, (float*)dst, expected_h, expected_w);
-        }
-    } else if (dtype == PixelDType::UINT16) {
-        stbi_us* img = stbi_load_16(path.c_str(), &w, &h, &ch, over ? 4 : 3);
-        if (!img) throw std::runtime_error(decode_failure(path));
-        const stbi_us* src = img;
-        std::vector<stbi_us> flat, turned;
         if (over) {
-            flat = composite_over(img, (size_t)w * h, over);
-            src = flat.data();
+            // EXR colour is premultiplied by its alpha, so the background
+            // only fills what the alpha leaves.
+            const size_t n = (size_t)info.width * info.height;
+            std::vector<float> rgb(n * 3);
+            for (size_t i = 0; i < n; ++i)
+                for (int c = 0; c < 3; ++c)
+                    rgb[i * 3 + c] = px[i * 4 + c] + over[c] * (1.0f - px[i * 4 + 3]);
+            px.swap(rgb);
         }
-        turn_decoded(src, w, h, 3, turns_cw, turned);
-        if (w == expected_w && h == expected_h) {
-            std::memcpy(dst, src, (size_t)w * h * 3 * sizeof(stbi_us));
-        } else {
-            _warn_rgb_dim_mismatch_once(path, w, h, expected_w, expected_h);
-            cpu_resize<stbi_us, 3>(src, h, w, (stbi_us*)dst, expected_h, expected_w);
-        }
-        stbi_image_free(img);
-    } else if (dtype == PixelDType::UINT8) {
-        stbi_uc* img = stbi_load(path.c_str(), &w, &h, &ch, over ? 4 : 3);
-        if (!img) throw std::runtime_error(decode_failure(path));
-        const stbi_uc* src = img;
-        std::vector<stbi_uc> flat, turned;
-        if (over) {
-            flat = composite_over(img, (size_t)w * h, over);
-            src = flat.data();
-        }
-        turn_decoded(src, w, h, 3, turns_cw, turned);
-        if (w == expected_w && h == expected_h) {
-            std::memcpy(dst, src, (size_t)w * h * 3);
-        } else {
-            _warn_rgb_dim_mismatch_once(path, w, h, expected_w, expected_h);
-            cpu_resize<stbi_uc, 3>(src, h, w, dst, expected_h, expected_w);
-        }
-        stbi_image_free(img);
+        place_rgb(path, px.data(), info.width, info.height, turns_cw, expected_h, expected_w,
+                  dst);
     } else {
-        throw std::runtime_error("DataManager: unsupported RGB pixel type for '" + path + "'");
+        decode_stbi_rgb_into(path, nullptr, expected_h, expected_w, dtype, dst, turns_cw, over);
     }
 }
 
@@ -506,6 +567,99 @@ void decode_mask_into(const std::string& path,
     apply_boundary_offset(dst, dst_h, dst_w, boundary_offset_frac);
 }
 
+// cpu_area_resize with colour weighted by the last channel, alpha: compositing
+// the result over a colour equals filtering the composite.
+template<typename T, int C>
+void cpu_area_resize_alpha(const T* src, int sh, int sw, T* dst, int dh, int dw)
+{
+    const double top = (double)std::numeric_limits<T>::max();
+    const double sy = (double)sh / dh, sx = (double)sw / dw;
+    for (int y = 0; y < dh; ++y) {
+        const double v0 = y * sy, v1 = (y + 1) * sy;
+        const int y0 = (int)v0, y1 = std::min(sh, std::max((int)std::ceil(v1), y0 + 1));
+        for (int x = 0; x < dw; ++x) {
+            const double u0 = x * sx, u1 = (x + 1) * sx;
+            const int x0 = (int)u0, x1 = std::min(sw, std::max((int)std::ceil(u1), x0 + 1));
+            double acc[C] = {}, wsum = 0.0;
+            for (int yy = y0; yy < y1; ++yy) {
+                const double wy = std::min((double)yy + 1, v1) - std::max((double)yy, v0);
+                for (int xx = x0; xx < x1; ++xx) {
+                    const double w = wy * (std::min((double)xx + 1, u1) - std::max((double)xx, u0));
+                    const T* p = src + ((size_t)yy * sw + xx) * C;
+                    const double wa = w * (double)p[C - 1];
+                    for (int c = 0; c < C - 1; ++c) acc[c] += wa * (double)p[c];
+                    acc[C - 1] += wa;
+                    wsum += w;
+                }
+            }
+            T* q = dst + ((size_t)y * dw + x) * C;
+            for (int c = 0; c < C - 1; ++c)
+                q[c] = acc[C - 1] > 0.0
+                           ? (T)std::min(top, std::round(acc[c] / acc[C - 1])) : (T)0;
+            q[C - 1] = (T)std::min(top, std::round(wsum > 0.0 ? acc[C - 1] / wsum : 0.0));
+        }
+    }
+}
+
+// An image of 1-4 channels area-filtered to dh x dw.
+template<typename T>
+std::vector<T> shrink_native(const T* src, int sh, int sw, int n, int dh, int dw)
+{
+    std::vector<T> out((size_t)dh * dw * n);
+    switch (n) {
+        case 1: cpu_area_resize<T, 1>(src, sh, sw, out.data(), dh, dw); break;
+        case 2: cpu_area_resize_alpha<T, 2>(src, sh, sw, out.data(), dh, dw); break;
+        case 3: cpu_area_resize<T, 3>(src, sh, sw, out.data(), dh, dw); break;
+        default: cpu_area_resize_alpha<T, 4>(src, sh, sw, out.data(), dh, dw); break;
+    }
+    return out;
+}
+
+// One message per cache folder, however many images and workers write into it.
+void note_cache_dir_once(const std::string& cached, bool written) {
+    static std::mutex mu;
+    static std::set<std::string> seen;
+    const std::string dir = std::filesystem::path(cached).parent_path().string();
+    std::lock_guard<std::mutex> lk(mu);
+    if (!seen.insert(dir).second) return;
+    if (written)
+        std::printf("%s\n", format(dmsg::downscale_cache_writing, {dir}).c_str());
+    else
+        std::fprintf(stderr, "%s %s\n", dmsg::word_warning.get(),
+                     format(dmsg::downscale_cache_unwritable, {dir}).c_str());
+    std::fflush(written ? stdout : stderr);
+}
+
+// `src` shrunk by `d` in its own format and channels, kept at `cached`, and
+// decoded into `dst` from those bytes. False when `src` would not decode or
+// encode, for the caller to decode it the ordinary way.
+bool decode_rgb_via_new_cache(const std::string& src, const std::string& cached, int d,
+                              const std::string& rounding, int expected_h, int expected_w,
+                              PixelDType dtype, uint8_t* dst, int turns_cw,
+                              const float* over)
+{
+    const dscache::Format fmt = dscache::format_of(src);
+    const bool sixteen = fmt == dscache::Format::Png && stbi_is_16_bit(src.c_str());
+    int w = 0, h = 0, n = 0;
+    void* px = sixteen ? (void*)stbi_load_16(src.c_str(), &w, &h, &n, 0)
+                       : (void*)stbi_load(src.c_str(), &w, &h, &n, 0);
+    if (!px) return false;
+    const int tw = dscache::scaled_side(w, d, rounding), th = dscache::scaled_side(h, d, rounding);
+    std::vector<uint8_t> bytes;
+    if (sixteen) {
+        const std::vector<uint16_t> shrunk = shrink_native((const uint16_t*)px, h, w, n, th, tw);
+        bytes = dscache::encode(fmt, shrunk.data(), tw, th, n, 16);
+    } else {
+        const std::vector<uint8_t> shrunk = shrink_native((const uint8_t*)px, h, w, n, th, tw);
+        bytes = dscache::encode(fmt, shrunk.data(), tw, th, n, 8);
+    }
+    stbi_image_free(px);
+    if (bytes.empty()) return false;
+    note_cache_dir_once(cached, dscache::store(cached, bytes));
+    decode_stbi_rgb_into(cached, &bytes, expected_h, expected_w, dtype, dst, turns_cw, over);
+    return true;
+}
+
 // An image's alpha as a 0/1 mask at dst_h x dst_w: area-resampled first, so a
 // shrunk mask keeps the pixels at least half covered, then gated at 128.
 void decode_alpha_mask_into(const std::string& path,
@@ -514,17 +668,47 @@ void decode_alpha_mask_into(const std::string& path,
                             int turns_cw = 0)
 {
     int w, h, ch;
-    stbi_uc* img = stbi_load(path.c_str(), &w, &h, &ch, 0);
-    if (!img) throw std::runtime_error(decode_failure(path));
-    if (ch != 2 && ch != 4) {
-        // Replaced by an opaque file since the probe.
+    std::vector<stbi_uc> alpha;
+    if (exr::is_exr(path)) {
+        exr::Info info;
+        exr::Options opt;
+        opt.channels = 4;
+        opt.threads = 1;
+        std::vector<float> px;
+        const std::string err = exr::decode(path, opt, info, px);
+        if (!err.empty())
+            throw std::runtime_error(decode_failure(path) + " (" + err + ")");
+        w = info.width;
+        h = info.height;
+        alpha.resize((size_t)w * h);
+        for (size_t i = 0; i < alpha.size(); ++i)
+            alpha[i] = (stbi_uc)std::lround(std::clamp(px[i * 4 + 3], 0.0f, 1.0f) * 255.0f);
+    } else if (tiff::is_tiff(path)) {
+        tiff::Info info;
+        tiff::Options opt;
+        opt.channels = 4;
+        opt.threads = 1;
+        std::vector<uint8_t> px;
+        const std::string err = tiff::decode_srgb8(path, opt, info, px);
+        if (!err.empty())
+            throw std::runtime_error(decode_failure(path) + " (" + err + ")");
+        w = info.width;
+        h = info.height;
+        alpha.resize((size_t)w * h);
+        for (size_t i = 0; i < alpha.size(); ++i) alpha[i] = px[i * 4 + 3];
+    } else {
+        stbi_uc* img = stbi_load(path.c_str(), &w, &h, &ch, 0);
+        if (!img) throw std::runtime_error(decode_failure(path));
+        if (ch != 2 && ch != 4) {
+            // Replaced by an opaque file since the probe.
+            stbi_image_free(img);
+            std::memset(dst, 1, (size_t)dst_h * dst_w);
+            return;
+        }
+        alpha.resize((size_t)w * h);
+        for (size_t i = 0; i < alpha.size(); ++i) alpha[i] = img[i * ch + ch - 1];
         stbi_image_free(img);
-        std::memset(dst, 1, (size_t)dst_h * dst_w);
-        return;
     }
-    std::vector<stbi_uc> alpha((size_t)w * h);
-    for (size_t i = 0; i < alpha.size(); ++i) alpha[i] = img[i * ch + ch - 1];
-    stbi_image_free(img);
 
     const stbi_uc* src = alpha.data();
     std::vector<stbi_uc> turned, resized;
@@ -585,12 +769,19 @@ bool probe_image_shape(const std::string& path, int& w, int& h) {
 }
 
 // On-disk RGB dtype. EXR is float32 whatever it stores: half carries values
-// above 1, and 16-bit normalized would clip every one of them.
+// above 1, and 16-bit normalized would clip every one of them. A TIFF is what
+// it stores, any float width as float32 for the same reason.
 PixelDType probe_pixel_dtype(const std::string& path,
                              PixelDType fallback = PixelDType::UINT8)
 {
     if (path.empty()) return fallback;
     if (exr::is_exr(path)) return PixelDType::FLOAT32;
+    if (tiff::is_tiff(path)) {
+        tiff::Info info;
+        if (!tiff::probe(path, info).empty()) return fallback;
+        return info.sample == tiff::Sample::F32 ? PixelDType::FLOAT32
+             : info.sample == tiff::Sample::U16 ? PixelDType::UINT16 : PixelDType::UINT8;
+    }
     if (stbi_is_16_bit(path.c_str())) return PixelDType::UINT16;
     return PixelDType::UINT8;
 }
@@ -709,6 +900,8 @@ public:
     CacheMode cache_mode() const { return _cfg.cache_mode; }
     void set_view_stats(std::vector<float> cam_sum, std::vector<uint32_t> cam_cnt);
 
+    int last_train_divisor() const { return _last_train_divisor.load(); }
+
     int max_face_passes() const {
         int n = 1;
         for (const auto& g : _train_groups) n = std::max(n, (int)g.passes.size());
@@ -807,6 +1000,9 @@ private:
     // Per-image, the decoded payload. Empty for images that don't have the
     // modality on disk. For DISK mode these stay empty.
     std::vector<std::vector<uint8_t>> _rgb_cache;
+    // The same rows area-filtered per progressive divisor, built at preload so
+    // the step does not pay for the filter; a stage's rows go once it is passed.
+    std::map<int, std::vector<std::vector<uint8_t>>> _rgb_cache_scaled;
     std::vector<std::vector<uint8_t>> _mask_cache;
     std::vector<std::vector<uint8_t>> _depth_cache;
     std::vector<std::vector<uint8_t>> _normal_cache;
@@ -824,6 +1020,8 @@ private:
     // build_train_schedule_locked() under _sampling_mu.
     std::vector<StepSpec>     _train_schedule;
     size_t                    _train_sched_cursor = 0;
+    int64_t                   _issued = 0;   // steps handed out since first_step
+    std::atomic<int>          _last_train_divisor{1};
 
     // The currently-returned-to-caller data. We hold one slot per kind so the
     // reference returned by next_*_batch()/next_train_step() stays valid until
@@ -897,6 +1095,10 @@ private:
     // Image i's mask at dst_h x dst_w, from whichever of mask_present's
     // sources it has.
     void decode_mask_of(int64_t i, int dst_h, int dst_w, uint8_t* dst) const;
+    // Image i's colour at dst_h x dst_w, through the downscale cache when the
+    // run has one.
+    void decode_rgb_of(int64_t i, int dst_h, int dst_w, PixelDType dt, uint8_t* dst,
+                       int decode_threads) const;
 
     // ---- Setup helpers ---------------------------------------------------
     void probe_dtypes();
@@ -911,7 +1113,10 @@ private:
     void preload_cpu_cache();
     void allocate_batch(DecodedBatch& b,
                         const IndexGroup& g,
-                        const std::vector<int32_t>& ds_indices);
+                        const std::vector<int32_t>& ds_indices,
+                        int divisor = 1);
+    // Scale a filled batch's sizes and cameras down by `divisor`.
+    void scale_batch(DecodedBatch& b, const IndexGroup& g, int divisor) const;
     void fill_camera_params(DecodedBatch& b);
 
     // CPU-mode synchronous batch fetch helpers.
@@ -1230,6 +1435,30 @@ void DataManagerImpl::warn_mask_aspect() const {
     }
 }
 
+void DataManagerImpl::decode_rgb_of(int64_t i, int dst_h, int dst_w, PixelDType dt,
+                                    uint8_t* dst, int decode_threads) const {
+    const std::string& src = _image_filenames[(size_t)i];
+    const int d = _cfg.downscale_cache_divisor;
+    const std::string cached =
+        d > 1 && dt != PixelDType::FLOAT32 ? dscache::path_for(src, _cfg.image_dir, d) : "";
+    if (!cached.empty()) {
+        std::error_code ec;
+        if (dscache::usable(cached, src, d)) {
+            try {
+                decode_rgb_into(cached, dst_h, dst_w, dt, dst, turns_of(i), decode_threads,
+                                composite_of(i));
+                return;
+            } catch (const std::exception&) {}   // a damaged cache: the original
+        } else if (!std::filesystem::exists(cached, ec) &&
+                   decode_rgb_via_new_cache(src, cached, d, _cfg.downscale_rounding_mode,
+                                            dst_h, dst_w, dt, dst, turns_of(i),
+                                            composite_of(i))) {
+            return;
+        }
+    }
+    decode_rgb_into(src, dst_h, dst_w, dt, dst, turns_of(i), decode_threads, composite_of(i));
+}
+
 void DataManagerImpl::decode_mask_of(int64_t i, int dst_h, int dst_w,
                                      uint8_t* dst) const {
     const std::string& file = _mask_filenames[(size_t)i];
@@ -1301,8 +1530,14 @@ std::vector<IndexGroup> DataManagerImpl::build_index_groups_member(
                 const int64_t o = _post_offsets[i] + k;
                 const int32_t w = K_i > 1 ? _post_widths[o]  : out_w;
                 const int32_t h = K_i > 1 ? _post_heights[o] : out_h;
+                // A pass renders its faces at once, so every per-pixel buffer
+                // of the step is sized by the pass; the split's weighting keeps
+                // the loss independent of where a run is cut.
+                const bool fits = !g.passes.empty() &&
+                    (int64_t)(g.passes.back().k1 - g.passes.back().k0 + 1) * w * h <=
+                        kWarpPassPixelBudget;
                 if (!g.passes.empty() && g.passes.back().width == w &&
-                    g.passes.back().height == h)
+                    g.passes.back().height == h && fits)
                     g.passes.back().k1 = k + 1;
                 else
                     g.passes.push_back(WarpFacePass{k, k + 1, w, h});
@@ -1402,9 +1637,17 @@ void DataManagerImpl::preload_cpu_cache() {
     if (has_depths())  _depth_cache.resize(N);
     if (has_normals()) _normal_cache.resize(N);
 
+    // Every coarser stage this run will still reach, filtered once here.
+    std::vector<int> coarse;
+    const auto& stages = _cfg.resolution_stages;
+    for (size_t k = 0; k < stages.size(); ++k)
+        if (stages[k].second > 1 && (k + 1 == stages.size() || stages[k + 1].first > _cfg.first_step))
+            coarse.push_back(stages[k].second);
+    for (int d : coarse) _rgb_cache_scaled[d].resize(N);
+
     // Pick a sensible worker count for the preload sweep — capped by the
     // number of images, so we don't spawn 32 threads to decode 4 images.
-    int n_threads = (int)std::max(1u, std::thread::hardware_concurrency());
+    int n_threads = (int)std::max(1u, spirula::hardware_threads());
     n_threads = std::min(n_threads, (int)N);
 
     std::atomic<int64_t> next_idx{0};
@@ -1433,9 +1676,13 @@ void DataManagerImpl::preload_cpu_cache() {
                     PixelDType dt = _rgb_dtype[i];
                     size_t bytes = (size_t)W * H * 3 * pixel_dtype_size(dt);
                     _rgb_cache[i].assign(bytes, 0);
-                    decode_rgb_into(_image_filenames[i], H, W, dt,
-                                    _rgb_cache[i].data(), turns_of(i), 1,
-                                    composite_of(i));
+                    decode_rgb_of(i, H, W, dt, _rgb_cache[i].data(), 1);
+                    for (int d : coarse) {
+                        const int w = progressive::scaled_extent(W, d), h = progressive::scaled_extent(H, d);
+                        auto& row = _rgb_cache_scaled[d][i];
+                        row.assign((size_t)w * h * 3 * pixel_dtype_size(dt), 0);
+                        resize_rgb_row(_rgb_cache[i].data(), H, W, row.data(), h, w, dt);
+                    }
                 }
                 // Per-image shape; a 1x1 mask is broadcast at batch-fill time.
                 // A synthesized one is image-sized: a 1x1 broadcast fails the
@@ -1488,7 +1735,8 @@ void DataManagerImpl::preload_cpu_cache() {
 void DataManagerImpl::allocate_batch(
     DecodedBatch& b,
     const IndexGroup& g,
-    const std::vector<int32_t>& ds_indices)
+    const std::vector<int32_t>& ds_indices,
+    int divisor)
 {
     int B   = (int)ds_indices.size();
     int H   = g.height, W = g.width;
@@ -1580,6 +1828,40 @@ void DataManagerImpl::allocate_batch(
     }
 
     fill_camera_params(b);
+    b.resolution_divisor = 1;
+    if (divisor > 1) scale_batch(b, g, divisor);
+}
+
+void DataManagerImpl::scale_batch(DecodedBatch& b, const IndexGroup& g, int divisor) const {
+    const int in_w = progressive::scaled_extent(g.width, divisor);
+    const int in_h = progressive::scaled_extent(g.height, divisor);
+    // The input image is resampled exactly onto in_w x in_h, so its cameras take
+    // the realized ratio; split faces are rendered, so theirs take 1 / divisor.
+    const float rx = (float)in_w / (float)g.width, ry = (float)in_h / (float)g.height;
+    const float face = 1.0f / (float)divisor;
+    const bool split = g.K > 1;
+    b.resolution_divisor = divisor;
+    b.input_width = in_w;
+    b.input_height = in_h;
+    b.width  = split ? progressive::scaled_extent(g.out_w, divisor) : in_w;
+    b.height = split ? progressive::scaled_extent(g.out_h, divisor) : in_h;
+    for (auto& pass : b.face_passes) {
+        pass.width  = progressive::scaled_extent(pass.width, divisor);
+        pass.height = progressive::scaled_extent(pass.height, divisor);
+    }
+    const float sx = split ? face : rx, sy = split ? face : ry;
+    for (size_t c = 0; c < b.intrins.size(); c += 4) {
+        b.intrins[c] *= sx; b.intrins[c + 2] *= sx;
+        b.intrins[c + 1] *= sy; b.intrins[c + 3] *= sy;
+    }
+    for (size_t c = 0; c < b.input_intrins.size(); c += 4) {
+        b.input_intrins[c] *= rx; b.input_intrins[c + 2] *= rx;
+        b.input_intrins[c + 1] *= ry; b.input_intrins[c + 3] *= ry;
+    }
+    for (size_t j = 0; j < b.input_source_models.size(); ++j)
+        if (b.input_source_models[j] >= 0)
+            srccam::rescale(b.input_source_models[j], &b.input_source_params[j * 16], rx, ry);
+    b.rgb_buffer.assign((size_t)b.input_num * in_h * in_w * 3 * pixel_dtype_size(b.rgb_dtype), 0);
 }
 
 void DataManagerImpl::fill_camera_params(DecodedBatch& b) {
@@ -1632,10 +1914,17 @@ void DataManagerImpl::fill_batch_from_cache(DecodedBatch& b) {
     size_t depth_row  = (size_t)b.depth_height  * b.depth_width * pixel_dtype_size(b.depth_dtype);
     size_t normal_row = (size_t)b.normal_height * b.normal_width * 3;
 
+    const auto scaled = b.resolution_divisor > 1 ? _rgb_cache_scaled.find(b.resolution_divisor)
+                                                  : _rgb_cache_scaled.end();
     for (int j = 0; j < B; ++j) {
         int32_t i = b.indices[j];
-        std::memcpy(b.rgb_buffer.data() + (size_t)j * rgb_row,
-                    _rgb_cache[i].data(), rgb_row);
+        uint8_t* rgb_dst = b.rgb_buffer.data() + (size_t)j * rgb_row;
+        if (b.resolution_divisor <= 1)
+            std::memcpy(rgb_dst, _rgb_cache[i].data(), rgb_row);
+        else if (scaled != _rgb_cache_scaled.end() && scaled->second[i].size() == rgb_row)
+            std::memcpy(rgb_dst, scaled->second[i].data(), rgb_row);
+        else   // a stage the preload did not build
+            resize_rgb_row(_rgb_cache[i].data(), _heights[i], _widths[i], rgb_dst, H, W, b.rgb_dtype);
 
         // Mask: cache row at per-image on-disk shape, batch slot at group
         // shape. If equal, memcpy. If cache is 1x1, broadcast (memset).
@@ -1835,6 +2124,22 @@ void DataManagerImpl::build_train_schedule_locked() {
 
     // Interleave step order so full-chunk and mixed steps don't cluster.
     std::shuffle(_train_schedule.begin(), _train_schedule.end(), _rng);
+
+    // One divisor per epoch, so each image trains equally often at each size. An
+    // epoch that would cross a stage switch ends at it, which keeps the switch on
+    // its planned step after a mid-epoch resume or a pass of uneven length.
+    const int64_t at = _cfg.first_step + _issued;
+    const int divisor = progressive::divisor_at(_cfg.resolution_stages, at);
+    for (const auto& [first, d] : _cfg.resolution_stages)
+        if (first > at) {
+            if ((int64_t)_train_schedule.size() > first - at) _train_schedule.resize((size_t)(first - at));
+            break;
+        }
+    for (auto& step : _train_schedule)
+        for (auto& sub : step) sub.divisor = divisor;
+    // CPU mode builds schedules on the consuming thread, the one that reads these rows.
+    for (auto it = _rgb_cache_scaled.begin(); it != _rgb_cache_scaled.end();)
+        it = it->first > divisor ? _rgb_cache_scaled.erase(it) : std::next(it);
 }
 
 // One draw weight per input image from the post-split view stats; empty when
@@ -1880,6 +2185,7 @@ StepSpec DataManagerImpl::next_train_step_spec() {
         throw std::runtime_error("DataManager: no training indices configured");
     if (_train_sched_cursor >= _train_schedule.size())
         build_train_schedule_locked();   // next epoch
+    ++_issued;
     return _train_schedule[_train_sched_cursor++];
 }
 
@@ -1894,10 +2200,11 @@ const TrainStep& DataManagerImpl::next_step_cpu() {
     for (size_t i = 0; i < spec.size(); ++i) {
         if (!st.subs[i]) st.subs[i] = std::make_shared<DecodedBatch>();
         DecodedBatch& b = *st.subs[i];
-        allocate_batch(b, _train_groups[spec[i].group], spec[i].picks);
+        allocate_batch(b, _train_groups[spec[i].group], spec[i].picks, spec[i].divisor);
         fill_batch_from_cache(b);
         b.build_views();
     }
+    if (!st.subs.empty()) _last_train_divisor = st.subs[0]->resolution_divisor;
     return st;
 }
 
@@ -2012,9 +2319,7 @@ void DataManagerImpl::worker_loop_rgb() {
         size_t row = (size_t)H * W * 3 * pixel_dtype_size(b.rgb_dtype);
         uint8_t* dst = b.rgb_buffer.data() + (size_t)job.slot * row;
         if (!decode_or_park([&]{
-                decode_rgb_into(_image_filenames[job.ds_index], H, W,
-                                b.rgb_dtype, dst, turns_of(job.ds_index), 1,
-                                composite_of(job.ds_index)); }))
+                decode_rgb_of(job.ds_index, H, W, b.rgb_dtype, dst, 1); }))
             return;
         publish_if_done(job);
     }
@@ -2236,7 +2541,7 @@ void DataManagerImpl::enqueue_step(
     // before any job runs.
     for (size_t i = 0; i < spec.size(); ++i) {
         stepp->subs[i] = std::make_shared<DecodedBatch>();
-        allocate_batch(*stepp->subs[i], _train_groups[spec[i].group], spec[i].picks);
+        allocate_batch(*stepp->subs[i], _train_groups[spec[i].group], spec[i].picks, spec[i].divisor);
     }
 
     auto decrement_absent = [&]() {
@@ -2303,6 +2608,7 @@ const TrainStep& DataManagerImpl::next_train_step() {
             throw std::runtime_error("DataManager: train prefetch queue closed");
     }
     _last_train_step_held = s;
+    if (!s->subs.empty()) _last_train_divisor = s->subs[0]->resolution_divisor;
     return *_last_train_step_held;
 }
 
@@ -2349,10 +2655,8 @@ void DataManagerImpl::fetch_one(int32_t index, DecodedBatch& out) {
     if (_cfg.cache_mode == CacheMode::CPU) {
         fill_batch_from_cache(out);
     } else {
-        decode_rgb_into(_image_filenames[index], out.input_height,
-                        out.input_width, out.rgb_dtype, out.rgb_buffer.data(),
-                        turns_of(index), /*decode_threads=*/0,
-                        composite_of(index));
+        decode_rgb_of(index, out.input_height, out.input_width, out.rgb_dtype,
+                      out.rgb_buffer.data(), /*decode_threads=*/0);
         // No mask of its own: the row stays zero, as the training path
         // leaves it.
         if (!out.mask_buffer.empty() && mask_present(index))
@@ -2430,6 +2734,7 @@ bool      DataManager::has_depths()     const              { return _impl->has_d
 bool      DataManager::has_normals()    const              { return _impl->has_normals(); }
 int64_t   DataManager::max_input_batch_size() const         { return _impl->max_input_batch_size(); }
 int       DataManager::max_face_passes() const              { return _impl->max_face_passes(); }
+int       DataManager::last_train_divisor() const           { return _impl->last_train_divisor(); }
 void      DataManager::set_view_stats(std::vector<float> cam_sum, std::vector<uint32_t> cam_cnt) {
     _impl->set_view_stats(std::move(cam_sum), std::move(cam_cnt));
 }

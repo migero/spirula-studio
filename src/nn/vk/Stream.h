@@ -65,12 +65,16 @@ public:
     // --- synchronization --------------------------------------------------
     void flush();  // submit what is recorded (does not wait)
     void sync();   // flush + wait for the queue to drain
+    // sync() for teardown, which must not throw: destructors free. Once it has
+    // failed the device is lost or hung, and every later call returns at once.
+    void drain() noexcept;
     // Dispatches recorded before flush() happens on its own. See the definition
     // for why an unbounded command buffer is not an option.
     static uint32_t max_dispatches_per_batch();
-    // FLOPs one submission may carry before the driver's watchdog is at risk
-    // (core/SubmitBudget.h). An op whose single dispatch would exceed it splits.
-    double workCap();
+    // FLOPs of this kernel one submission may carry before the driver's watchdog
+    // is at risk (core/SubmitBudget.h). An op whose single dispatch would exceed it
+    // splits.
+    double workCap(const char* entry, const SpecList& spec);
 
     // Makes the NEXT submission wait on an external timeline. Used by the video
     // decoder, whose work runs on a different queue family: the decode signals
@@ -80,6 +84,15 @@ public:
     // queue can wait for work recorded here.
     VkSemaphore timeline();
     uint64_t    lastSubmitted();
+
+    // Another API's work between this stream's submissions (nn/vk/MetalInterop.mm):
+    // flushes, returns the timeline value it waits for and the one it signals.
+    // The next submission here waits on `signal`, and hangs if it never comes.
+    struct Handoff { uint64_t wait, signal; };
+    Handoff handOff();
+    // Runs before this stream records into a fresh command buffer and before
+    // sync() waits, so the other API's open work is submitted first.
+    void setExternalCloser(void (*fn)());
 
     // --- escape hatch -----------------------------------------------------
     // Raw access to the open command buffer, for the handful of commands this
@@ -108,6 +121,10 @@ private:
     VkCommandBuffer begin();
     void            barrier(VkCommandBuffer cb);
 };
+
+// Blocks the calling thread until `timeline` reaches `value`; a GPU that stops
+// making progress throws rather than hanging. Any thread.
+void wait_timeline(VkSemaphore timeline, uint64_t value);
 
 // SS_NN_DEBUG_SYNC=1: sync + report after every dispatch, printing the entry
 // name and grid BEFORE the dispatch, so a hang bisects to the exact kernel

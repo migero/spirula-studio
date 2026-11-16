@@ -10,7 +10,9 @@
 
 #include "app/FfmpegVideo.h"
 #include "app/FrameExtract.h"
+#include "app/LogLuts.h"
 #include "app/Tools.h"
+#include "app/cli/ModelLicense.h"
 #include "i18n/catalog/Cli.h"
 #include "i18n/catalog/Data.h"
 #include "i18n/catalog/Dataset.h"
@@ -47,7 +49,7 @@ void set_env(const char* key, const char* value) {
 
 // A row of `--help`: identifier on the left, translated sentence on the right,
 // wrapped by i18n::wrap so a language without spaces still breaks.
-void help_row(const char* flags, const spirula::i18n::Msg& m) {
+void help_row(const char* flags, const std::string& text) {
     constexpr int kCol = 25;
     std::string left = std::string("  ") + flags;
     if (spirula::i18n::display_width(left) >= kCol) {
@@ -55,10 +57,14 @@ void help_row(const char* flags, const spirula::i18n::Msg& m) {
         left.clear();
     }
     left = spirula::i18n::pad_to(left, kCol);
-    for (const std::string& line : spirula::i18n::wrap(m.get(), 86 - kCol)) {
+    for (const std::string& line : spirula::i18n::wrap(text, 86 - kCol)) {
         std::fprintf(stderr, "%s%s\n", left.c_str(), line.c_str());
         left.assign(kCol, ' ');
     }
+}
+
+void help_row(const char* flags, const spirula::i18n::Msg& m) {
+    help_row(flags, std::string(m.get()));
 }
 
 void usage() {
@@ -69,18 +75,27 @@ void usage() {
     std::fprintf(stderr, "%s\n", H::xh_frame_selection.get());
     help_row("-o, --out <dir>", H::xh_out);
     help_row("-s, --skip <n>", H::xh_skip);
-    help_row("    --start <sec>", H::xh_start);
     help_row("-k, --keep <n>", H::xh_keep);
     help_row("-n, --max-frames <n>", H::xh_max_frames);
+    help_row("    --start <time>", H::xh_start);
+    help_row("    --end <time>", H::xh_end);
     help_row("-q, --quality <0..100>", H::xh_quality);
     help_row("-r, --rotate <deg>", H::xh_rotate);
     help_row("    --no-autorotate", H::xh_no_autorotate);
     help_row("    --scale <f>", H::xh_scale);
+    std::string luts;
+    for (const app::BuiltinLut& b : app::builtin_luts())
+        luts += (luts.empty() ? "" : ", ") + std::string(b.id);
+    help_row("    --lut <file|name>", spirula::i18n::format(H::xh_lut, {luts}));
     help_row("    --track <i>", H::xh_track);
     help_row("    --sync", H::xh_sync);
     help_row("    --adaptive", H::xh_adaptive);
     help_row("    --adaptive-range <f>", H::xh_adaptive_range);
     help_row("    --gps-distance <m>", spirula::i18n::msg::dataset::gps_spacing_distance);
+    help_row("    --blur-reject <f>", H::xh_blur_reject);
+    help_row("    --similar <n>", H::xh_similar);
+    help_row("    --skipped-dir <dir>", H::xh_skipped_dir);
+    help_row("    --report <file>", H::xh_report);
     help_row("    --threads <n>", H::xh_threads);
     help_row("    --decoder <d>", H::xh_decoder);
     help_row("    --ffmpeg <exe>", H::xh_ffmpeg);
@@ -115,20 +130,42 @@ void usage() {
                  H::label_common.get());
 }
 
+// Seconds, or [[h:]m:]s with a fraction.
+bool parse_seconds(const char* text, double& out) {
+    double total = 0.0;
+    int parts = 0;
+    for (const char* p = text; *p;) {
+        char* end = nullptr;
+        const double v = std::strtod(p, &end);
+        if (end == p || !(v >= 0.0) || ++parts > 3) return false;
+        total = total * 60.0 + v;
+        p = end;
+        if (*p == ':') p++;
+        else if (*p) return false;
+    }
+    if (parts == 0) return false;
+    out = total;
+    return true;
+}
+
 struct Options {
     std::string input;
     std::string out_dir, mask_dir;
     int    skip = 1, keep = -1, max_frames = 0;
-    float  start = 0.0f;
-    bool   start_requested = false;
+    double clip_start = 0.0, clip_end = 0.0;
     int    quality = 95, rotate = 0;
     bool   auto_rotate = true;
     float  scale = 1.0f;
+    std::string lut;
     int    track = -1;
     bool   sync = false;
     bool   adaptive = false;
     float  adaptive_range = 4.0f;
     double gps_distance = 0;
+    float  blur_reject = 0.0f;
+    int    similar = 0;
+    std::string skipped_dir;
+    std::string report;
     int    threads = 0;
     app::FrameDecoder decoder = app::FrameDecoder::Auto;
     std::string ffmpeg = "ffmpeg";
@@ -162,17 +199,26 @@ bool parse_args(int argc, char** argv, Options& o) {
         };
         if (a == "-o" || a == "--out") o.out_dir = next("--out");
         else if (a == "-s" || a == "--skip") o.skip = std::atoi(next("--skip"));
-        else if (a == "--start") {
-            o.start = std::strtof(next("--start"), nullptr);
-            o.start_requested = true;
-        }
         else if (a == "-k" || a == "--keep") o.keep = std::atoi(next("--keep"));
         else if (a == "-n" || a == "--max-frames") o.max_frames = std::atoi(next("--max-frames"));
+        else if (a == "--start" || a == "--end") {
+            const char* v = next(a.c_str());
+            double t = 0.0;
+            if (!parse_seconds(v, t)) {
+                std::fprintf(stderr, "%s\n",
+                             spirula::i18n::format(
+                                 spirula::i18n::msg::cli::sam_unexpected_argument,
+                                 {a + " " + v}).c_str());
+                return false;
+            }
+            (a == "--start" ? o.clip_start : o.clip_end) = t;
+        }
         else if (a == "-q" || a == "--quality") o.quality = std::atoi(next("--quality"));
         else if (a == "-r" || a == "--rotate") o.rotate = std::atoi(next("--rotate"));
         else if (a == "--no-autorotate") o.auto_rotate = false;
         else if (a == "--autorotate") o.auto_rotate = true;
         else if (a == "--scale") o.scale = std::strtof(next("--scale"), nullptr);
+        else if (a == "--lut") o.lut = next("--lut");
         else if (a == "--track") o.track = std::atoi(next("--track"));
         else if (a == "--sync") o.sync = true;
         else if (a == "--adaptive") o.adaptive = true;
@@ -180,6 +226,14 @@ bool parse_args(int argc, char** argv, Options& o) {
             o.adaptive_range = std::strtof(next("--adaptive-range"), nullptr);
         else if (a == "--gps-distance")
             o.gps_distance = std::strtod(next("--gps-distance"), nullptr);
+        else if (a == "--blur-reject")
+            o.blur_reject = std::strtof(next("--blur-reject"), nullptr);
+        else if (a == "--similar")
+            o.similar = std::atoi(next("--similar"));
+        else if (a == "--skipped-dir")
+            o.skipped_dir = next("--skipped-dir");
+        else if (a == "--report")
+            o.report = next("--report");
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--decoder") {
             const std::string d = next("--decoder");
@@ -255,7 +309,7 @@ bool parse_args(int argc, char** argv, Options& o) {
                      spirula::i18n::msg::cli::sam_rotate_multiple_of_90.get());
         return false;
     }
-    if (o.start_requested && o.start < 0.0f) {
+    if (o.clip_start < 0.0f || o.clip_end < 0.0f) {
         std::fprintf(stderr, "%s\n",
                      spirula::i18n::msg::cli::sam_start_negative.get());
         return false;
@@ -280,6 +334,8 @@ int sam_cli_extract(int argc, char** argv) {
     if (o.validate) set_env("SS_VK_VALIDATION", "1");
     if (o.profile) set_env("SS_PROFILE", "1");
 
+    if (!o.model.empty() && !app::require_model_license(o.model)) return 2;
+
     const fs::path input(o.input);
     const fs::path base = o.out_dir.empty()
                               ? (input.parent_path() / input.stem() / "images")
@@ -295,32 +351,27 @@ int sam_cli_extract(int argc, char** argv) {
     job.skip = o.skip;
     job.keep = o.keep;
     job.max_frames = o.max_frames;
+    job.clip_start = o.clip_start;
+    job.clip_end = o.clip_end;
     job.quality = o.quality;
     job.rotate = o.rotate;
     job.auto_rotate = o.auto_rotate;
     job.scale = o.scale;
+    if (o.lut == "auto") job.lut = app::detect_log_lut(o.input);
+    else if (app::find_builtin_lut(o.lut)) job.lut = app::builtin_lut_spec(o.lut);
+    else job.lut = o.lut;
     job.track = o.track;
     job.sync_tracks = o.sync;
     job.adaptive = o.adaptive;
     job.adaptive_range = o.adaptive_range;
     job.gps_spacing_m = o.gps_distance;
+    job.blur_reject = o.blur_reject;
+    job.similar_bits = o.similar;
+    job.skipped_dir = o.skipped_dir;
     job.threads = o.threads;
     job.decoder = o.decoder;
     job.ffmpeg_exe = o.ffmpeg;
     job.write_overlay = o.overlay;
-    // Seconds -> source frames, the same conversion DatasetPrep.cpp makes.
-    if (o.start_requested && o.start > 0.0f) {
-        app::VideoFacts facts;
-        const std::atomic<bool> never{false};
-        if (!app::ffmpeg_probe_video(o.ffmpeg, o.input, facts, never) ||
-            !(facts.fps > 1.0)) {
-            std::fprintf(stderr, "%s\n",
-                         spirula::i18n::format(
-                             spirula::i18n::msg::cli::sam_start_no_fps, {}).c_str());
-            return 2;
-        }
-        job.start_frame = (int64_t)(o.start * facts.fps);
-    }
     // A 360 file is recognised by its packing, not by its name, and only then
     // is there anything for --360 to select.
     if (o.pano_mode != "off") {
@@ -377,6 +428,28 @@ int sam_cli_extract(int argc, char** argv) {
 
     app::FrameExtractSinks sinks;
     sinks.log = [](const std::string& l) { std::fprintf(stderr, "%s\n", l.c_str()); };
+    // One line a chosen frame, for a script: English and stable on purpose.
+    FILE* report = nullptr;
+    if (!o.report.empty()) {
+        std::error_code ec;
+        const fs::path dir = fs::path(o.report).parent_path();
+        if (!dir.empty()) fs::create_directories(dir, ec);
+        report = std::fopen(o.report.c_str(), "w");
+        if (!report) {
+            std::fprintf(stderr, "%s\n",
+                         spirula::i18n::format(spirula::i18n::msg::cli::sam_report_unwritable,
+                                               {o.report}).c_str());
+            return 1;
+        }
+    }
+    if (report) {
+        std::fprintf(report, "frame,edge_width_px,blur_px,verdict\n");
+        sinks.judged = [report](const app::FramePick& p, const nn::Image&) {
+            static const char* const kVerdict[] = {"kept", "blurry", "similar"};
+            std::fprintf(report, "%lld,%.2f,%.2f,%s\n", (long long)p.index, p.width, p.blur,
+                         kVerdict[(int)p.verdict]);
+        };
+    }
 
     app::FrameExtractStats stats;
     std::string error;
@@ -387,6 +460,7 @@ int sam_cli_extract(int argc, char** argv) {
                                            {error}).c_str());
         rc = 1;
     }
+    if (report) std::fclose(report);
     std::printf("%s", app::format_extract_stats(stats, base.string(),
                                                 !o.model.empty()).c_str());
     if (stats.write_failures) {

@@ -137,11 +137,12 @@ static BgLumaViews _bg_luma_views(const EngineBackground& bg) {
     return v;
 }
 
-static void _ensure_bg_sh_optim_state() {
+void _ensure_bg_sh_optim_state() {
     auto& bg = engine().background;
     if (bg.sh_optim_initialized) return;
     if (bg.mode != EngineBackground::Mode::Sh) return;
     int64_t n = bg.sh_coeffs.size();
+    if (n == 0) return;
     bg.sh_g1.resize(PoolSlot::EngBgSkyG1, n); bg.sh_g1.zero();
     bg.sh_g2.resize(PoolSlot::EngBgSkyG2, n); bg.sh_g2.zero();
     bg.sh_optim_initialized = true;
@@ -208,6 +209,7 @@ void engine_set_background_step_params(uint32_t seed, float randomize_weight,
 void _engine_background_forward() {
     auto& bg = engine().background;
     if (!bg.enabled || bg.mode == EngineBackground::Mode::None) return;
+    StepTimingScope timing(StepPart::Background, StepScale::Pixels);
 
     int C_batch = (int)engine().camera.num;
     int H       = engine().camera.height;
@@ -270,6 +272,72 @@ void _engine_background_forward() {
     DeviceTensor3D<float3> bg_image(bg_image_tv);
     blend_background_forward(bg.fwd_pre_blend_rgb, Ts_in, bg_image, post_rgb);
     fwd_rgb_tensor = post_rgb;
+}
+
+
+// ============================================================================
+// The background's share of the fused appearance chain
+// ============================================================================
+void _engine_background_chain_params(AppearanceChainParams& p) {
+    auto& bg = engine().background;
+    p.bg = AppearanceBg::None;
+    if (!bg.enabled || bg.mode == EngineBackground::Mode::None) return;
+
+    const int C_batch = (int)engine().camera.num;
+    const int H = engine().camera.height;
+    const int W = engine().camera.width;
+    bg.cur_match_luma = bg.match_luma_pending &&
+                        bg.exponent_by_cam.size() > 0 &&
+                        engine().bilagrid_cur_cam_indices.size() >= C_batch;
+    bg.match_luma_pending = false;
+
+    if (bg.mode == EngineBackground::Mode::Color) {
+        p.bg = AppearanceBg::Color;
+        p.bg_color[0] = bg.color.x;
+        p.bg_color[1] = bg.color.y;
+        p.bg_color[2] = bg.color.z;
+        return;
+    }
+    if (bg.mode == EngineBackground::Mode::Sh) {
+        bg.fwd_background.resize(PoolSlot::EngBgSkyImage, C_batch, H, W);
+        BgShViews vs = _engine_bg_sh_views(C_batch);
+        render_background_sh_forward(
+            W, H, engine().camera.model_str, engine().camera.distortion_str,
+            bg.sh_degree, vs.viewmats, vs.intrins, vs.dist_coeffs,
+            vs.sh_coeffs, _dt3d_tv(bg.fwd_background));
+        p.bg = AppearanceBg::Image;
+        p.bg_image = (const float*)bg.fwd_background.data_ptr();
+        return;
+    }
+    bg.cur_block_px = _bg_block_px(bg, H, W);
+    p.bg = AppearanceBg::Noise;
+    p.bg_transfer = bg.splat_transfer;
+    p.bg_is_linear = bg.splat_is_linear ? 1 : 0;
+    p.bg_blocky = bg.mode == EngineBackground::Mode::Pseudorandom ? 1 : 0;
+    p.bg_block_px = bg.cur_block_px;
+    p.bg_seed = bg.cur_seed;
+    p.bg_randomize_weight = bg.cur_randomize_weight;
+    p.bg_exponent_by_cam = _bg_luma_views(bg).exponent;
+}
+
+void _engine_background_sh_backward(const float* v_background) {
+    auto& bg = engine().background;
+    const int C_batch = (int)engine().camera.num;
+    const int H = engine().camera.height;
+    const int W = engine().camera.width;
+    const int64_t sh_n = bg.sh_coeffs.size();
+    float* v_sh_dev = DevicePool::global().acquire<float>(
+        PoolSlot::EngBgSkyVSh, (size_t)sh_n * 3);
+    backend::memset_async(v_sh_dev, 0, sh_n * 3 * sizeof(float),
+                          backend::kDefaultStream);
+    BgShViews vs = _engine_bg_sh_views(C_batch);
+    render_background_sh_backward(
+        W, H, engine().camera.model_str, engine().camera.distortion_str,
+        bg.sh_degree, vs.viewmats, vs.intrins, vs.dist_coeffs, vs.sh_coeffs,
+        _dt3d_tv(bg.fwd_background),
+        TorchTensorView((uint64_t)v_background, 4,
+                        {(int64_t)C_batch, (int64_t)H, (int64_t)W, 3LL}),
+        TorchTensorView((uint64_t)v_sh_dev, 4, {sh_n, 3LL}));
 }
 
 
@@ -390,6 +458,7 @@ void _engine_background_backward_hook(
 void engine_background_optim_step(int step, const BackgroundStepConfig& cfg) {
     auto& bg = engine().background;
     if (!bg.enabled) return;
+    StepTimingScope timing(StepPart::Background, StepScale::Fixed);
     if (bg.mode != EngineBackground::Mode::Sh) return;
 
     _ensure_bg_sh_optim_state();
@@ -410,7 +479,7 @@ void engine_background_optim_step(int step, const BackgroundStepConfig& cfg) {
             _sh_slice_fnd(bg.sh_g1.data_ptr(),           1),
             _sh_slice_fnd(bg.sh_g2.data_ptr(),           1),
             cfg.lr_dc, adam_step, no_per_splat_steps,
-            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f,
+            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f, SbOptimCells{},
             /*grad_scale=*/1.0f, /*zero_grad=*/false);
     }
     if (n > 1 && cfg.lr_sh > 0.0f) {
@@ -421,7 +490,7 @@ void engine_background_optim_step(int step, const BackgroundStepConfig& cfg) {
             _sh_slice_fnd(bg.sh_g1.data_ptr() + 1,       n - 1),
             _sh_slice_fnd(bg.sh_g2.data_ptr() + 1,       n - 1),
             cfg.lr_sh, adam_step, no_per_splat_steps,
-            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f,
+            /*l2_reg=*/0.0f, /*l2_reg_offset=*/0.0f, SbOptimCells{},
             /*grad_scale=*/1.0f, /*zero_grad=*/false);
     }
 }
@@ -494,4 +563,13 @@ int engine_copy_background_to_host(TorchTensorView out_image) {
         0.5f, (colorspace::Transfer)bg.splat_transfer, bg.splat_is_linear);
     for (int64_t i = 0; i < n; ++i) h[i] = fill;
     return 1;
+}
+
+
+bool engine_has_background_sh(int* out_degree) {
+    if (engine().background.enabled && engine().background.mode == EngineBackground::Mode::Sh) {
+        if (out_degree) *out_degree = engine().background.sh_degree;
+        return true;
+    }
+    return false;
 }

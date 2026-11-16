@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -178,7 +179,8 @@ int main() {
         a.mark_scanned(3, 2);
         a.mark_scanned(50, 9);
         a.set_last_full_scan(50);
-        const std::string path = "/tmp/opencode/scanindex_test.bin";
+        const std::string path =
+            (std::filesystem::temp_directory_path() / "scanindex_test.bin").string();
         std::string err;
         check(a.save(path, 100, err), "the index saves");
 

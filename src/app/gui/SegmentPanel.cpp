@@ -65,7 +65,8 @@ SegmentPanel::~SegmentPanel() {
     if (_worker.joinable()) _worker.join();
 }
 
-void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
+void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model,
+                        std::optional<PreviewFrame> initial) {
     _cancel = true;
     if (_worker.joinable()) _worker.join();
     _cancel = false;
@@ -76,8 +77,10 @@ void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
     _src = src;
     if (_src.ffmpeg_exe.empty()) _src.ffmpeg_exe = "ffmpeg";
     _model = model;
-    _folder_idx = 0;
+    // A file cut to one lens shows that one: its frames are all the run writes.
+    _folder_idx = std::max(_src.lens, 0);
     _frame_idx = 0;
+    _target_frame = std::move(initial);
     _frame_dirty = true;
     _needs_run = true;
     _border = app::BorderDetect{};
@@ -90,6 +93,8 @@ void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
     _tool.cancel();
     _history.clear();
     _saved_msg.clear();
+    _edit_request.reset();
+    _editing.reset();
     _path.cancel();
     _pen.cancel();
     _pt_part = PenPart::None;
@@ -117,24 +122,30 @@ void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
         _preview_dirty = false;
         _status = dmsg::preview_working.get();
         _error.clear();
+        _model_missing = false;
         _livewire_pending.reset();
         _livewire_pending_key.clear();
         _livewire_ready = false;
     }
     _tex_w = _tex_h = 0;
+    _view_w = _view_h = 0;
+    _panning = false;
     _listing = true;
     _open = true;
     const PreviewSource requested = _src;
     _worker = std::thread([this, requested] {
+        // A listing handed over stays "listing" until draw() takes it, or a
+        // job could start in between on no frames.
         struct ListingGuard {
             std::atomic<bool>& flag;
-            ~ListingGuard() { flag = false; }
+            bool handed = false;
+            ~ListingGuard() { if (!handed) flag = false; }
         } listing_guard{_listing};
         try {
             PreviewSource listed = requested;
             std::vector<PreviewFrame> frames;
             std::vector<std::string> all_files;
-            collect_preview_frames(listed, listed.is_video ? 8 : 12, frames,
+            collect_preview_frames(listed, 0, frames,
                                    all_files, _cancel);
             if (_cancel.load()) return;
             std::vector<std::string> folders = preview_folders(listed);
@@ -144,6 +155,7 @@ void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
             _all_files_pending = std::move(all_files);
             _folders_pending = std::move(folders);
             _frames_ready = true;
+            listing_guard.handed = true;
             _status.clear();
         } catch (const std::exception& e) {
             if (!_cancel.load()) {
@@ -153,6 +165,38 @@ void SegmentPanel::open(const PreviewSource& src, const MaskModelFiles& model) {
             }
         }
     });
+}
+
+void SegmentPanel::show_frame(const PreviewFrame& frame) {
+    if (_frames.empty()) {
+        _target_frame = frame;
+        return;
+    }
+    const int at = frame_position(frame);
+    if (at < 0 || at == _frame_idx) return;
+    _frame_idx = at;
+    _frame_dirty = true;
+    _needs_run = true;
+}
+
+int SegmentPanel::frame_position(const PreviewFrame& frame) const {
+    if (_frames.empty()) return -1;
+    if (_src.is_video) {
+        const auto it = std::lower_bound(
+            _frames.begin(), _frames.end(), frame.index,
+            [](const PreviewFrame& f, long long index) { return f.index < index; });
+        if (it == _frames.end()) return (int)_frames.size() - 1;
+        const int at = (int)(it - _frames.begin());
+        if (at > 0 && frame.index - _frames[(size_t)at - 1].index < it->index - frame.index)
+            return at - 1;
+        return at;
+    }
+    if (frame.path.empty()) return -1;
+    // By path, not position: the source grid leaves out a masks/ inside the folder.
+    const fs::path want(frame.path);
+    for (size_t i = 0; i < _frames.size(); i++)
+        if (fs::path(_frames[i].path) == want) return (int)i;
+    return -1;
 }
 
 void SegmentPanel::close() {
@@ -251,14 +295,17 @@ std::string SegmentPanel::shown_camera() const {
 
 std::vector<std::string> SegmentPanel::camera_names() const {
     std::set<std::string> out;
+    std::vector<std::string> lenses = _folders;
+    if (_src.lens >= 0 && _src.lens < (int)_folders.size())
+        lenses = {_folders[(size_t)_src.lens]};
     if (_src.is_video) {
-        out.insert(_folders.begin(), _folders.end());
+        out.insert(lenses.begin(), lenses.end());
     } else {
         for (const std::string& f : _all_files) {
             const std::string sub = camera_of(f);
             if (_src.look.packed_lenses < 2) out.insert(sub);
             else
-                for (const std::string& lens : _folders)
+                for (const std::string& lens : lenses)
                     out.insert(sub.empty() ? lens : lens + "/" + sub);
         }
     }
@@ -269,9 +316,11 @@ app::CameraStencil& SegmentPanel::scope(app::FrameStencil& s) {
     if (!s.per_camera()) return s;
     const std::string cam = shown_camera();
     auto it = s.cameras.find(cam);
-    if (it == s.cameras.end())
-        it = s.cameras.emplace(cam, static_cast<const app::CameraStencil&>(s)).first;
-    return it->second;
+    if (it != s.cameras.end()) return it->second;
+    // Nothing is shown until the listing lands, and "" is then no camera the
+    // run writes; the fixed-areas table would list it as one.
+    if (cam.empty() && _cameras.empty()) return s;
+    return s.cameras.emplace(cam, static_cast<const app::CameraStencil&>(s)).first->second;
 }
 
 // On: every camera starts as a copy of the input's, so nothing changes until
@@ -504,14 +553,13 @@ void SegmentPanel::start_job(const MaskSettings& s,
             if (wants_model)
                 set_error(spirula::i18n::msg::log::err_no_builtin_segmentation.get());
 #else
-            if (!wants_model) {
+            {
+                std::lock_guard<std::mutex> lk(_mu);
+                _model_missing = wants_model && model.empty();
+            }
+            if (!wants_model || model.empty()) {
                 stencil_only();
                 return;
-            }
-            if (model.empty()) {
-                stencil_only();
-                return set_error(
-                    spirula::i18n::msg::log::err_no_model_selected.get());
             }
 
             // ---- the model ----
@@ -652,28 +700,30 @@ void SegmentPanel::upload_preview() {
     _tex_h = h;
 }
 
-// The stencil as a translucent red layer over the frame. Rasterizing it into a
-// small texture beats drawing it: shapes that keep and shapes that remove can
-// compose into a region no sequence of ImDrawList calls describes, and the
-// rasterizer that answers it here is the one that writes the masks.
-void SegmentPanel::upload_stencil(const app::FrameMask& stencil) {
-    const std::string key = app::format_mask_shapes(stencil.shapes) + "|" +
-                            stencil.image;
+// The stencil as a translucent red layer over the frame's on-screen part. A
+// raster, not draw calls: keep and remove shapes compose into regions no path
+// describes, and this rasterizer is the one that writes the masks.
+void SegmentPanel::upload_stencil(const app::FrameMask& stencil, const float win[4], int w,
+                                  int h) {
+    char view[96];
+    std::snprintf(view, sizeof view, "|%g,%g,%g,%g|%dx%d", win[0], win[1], win[2], win[3], w, h);
+    const std::string key = app::format_mask_shapes(stencil.shapes) + view;
     if (key == _stencil_key) return;
     _stencil_key = key;
-    if (stencil.empty()) {
+    // The GUI never sets FrameMask::image, so the shapes are the whole overlay.
+    if (stencil.shapes.empty()) {
         if (_stencil_tex) {
             glDeleteTextures(1, &_stencil_tex);
             _stencil_tex = 0;
         }
         return;
     }
-    const float aspect = _tex_h > 0 ? (float)_tex_w / (float)_tex_h : 1.0f;
-    const int w = aspect >= 1.0f ? 512 : std::max(8, (int)(512 * aspect));
-    const int h = aspect >= 1.0f ? std::max(8, (int)(512 / aspect)) : 512;
+    app::FrameMask part;
+    for (const app::MaskShape& s : stencil.shapes)
+        part.shapes.push_back(stencil_crop(s, win[0], win[1], win[2], win[3]));
     std::vector<uint8_t> px;
     std::string err;
-    if (!app::rasterize_frame_mask(stencil, w, h, px, err)) return;
+    if (!app::rasterize_frame_mask(part, w, h, px, err)) return;
     std::vector<uint8_t> rgba((size_t)w * h * 4, 0);
     for (size_t i = 0; i < px.size(); i++) {
         if (px[i] > 127) continue;
@@ -691,45 +741,92 @@ void SegmentPanel::upload_stencil(const app::FrameMask& stencil) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  rgba.data());
+    std::copy(win, win + 4, _stencil_win);
 }
 
 void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil,
                               bool& edited) {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float box_h = std::max(avail.y - 8.0f, 120.0f);
+    const ImVec2 pane(std::max(avail.x, 64.0f), std::max(avail.y - 8.0f, 120.0f));
     if (!_tex || _tex_w <= 0) {
-        ImGui::Dummy(ImVec2(avail.x, box_h));
+        ImGui::Dummy(pane);
         return;
-    }
-    const float aspect = (float)_tex_w / (float)_tex_h;
-    ImVec2 size(avail.x, avail.x / aspect);
-    if (size.y > box_h) {
-        size.y = box_h;
-        size.x = box_h * aspect;
     }
     // An InvisibleButton rather than an Image: a plain Image is not an item the
     // mouse can hold, so a drag across it moves the WINDOW, which is exactly
     // what happens while pulling a shape's handle around.
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    ui::InvisibleButtonRaw("##canvas", size,
-                           ImGuiButtonFlags_MouseButtonLeft |
-                               ImGuiButtonFlags_MouseButtonRight);
+    const ImVec2 corner = ImGui::GetCursorScreenPos();
+    ui::InvisibleButtonRaw("##canvas", pane,
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
+                               ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);   // the wheel zooms; nothing scrolls under it
+    const ImVec2 pane_end(corner.x + pane.x, corner.y + pane.y);
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool space = ImGui::IsKeyDown(ImGuiKey_Space);
+
+    if (_view_w != _tex_w || _view_h != _tex_h) {
+        _view = mask::View{1.0f, 0.5f * (float)_tex_w, 0.5f * (float)_tex_h};
+        _view_w = _tex_w;
+        _view_h = _tex_h;
+    }
+    const bool brush = _draw == DrawTool::Eraser ||
+                       (_draw == DrawTool::Shape && _tool.id() == ToolId::Brush);
+    // Not mid-stroke or mid-drag: those hold canvas pixels, which a new view would move.
+    if (!_tool.in_progress() && _drag_handle == -1 && _pt_part == PenPart::None) {
+        const mask::Mapping m0 = mask::mapping(_view, _tex_w, _tex_h, pane.x, pane.y);
+        if (hovered && io.MouseWheel != 0.0f) {
+            if (!io.KeyAlt)
+                mask::zoom_about(_view, std::pow(1.2f, io.MouseWheel), io.MousePos.x - corner.x,
+                                 io.MousePos.y - corner.y, _tex_w, _tex_h, pane.x, pane.y);
+            else if (brush)
+                _brush_pct = std::clamp(_brush_pct * std::pow(1.25f, io.MouseWheel), 0.2f, 25.0f);
+        }
+        const bool pan_down = ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                              (space && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+        if (hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
+                        (space && ImGui::IsMouseClicked(ImGuiMouseButton_Left))))
+            _panning = true;
+        if (_panning) {
+            if (!pan_down) _panning = false;
+            else mask::pan(_view, io.MouseDelta.x, io.MouseDelta.y, m0, _tex_w, _tex_h);
+        }
+    }
+    // From here on `origin` and `size` are the picture's rectangle on screen,
+    // which may overhang the pane or sit inside it with room around.
+    const mask::Mapping m = mask::mapping(_view, _tex_w, _tex_h, pane.x, pane.y);
+    const ImVec2 origin(corner.x + m.to_screen_x(0.0f), corner.y + m.to_screen_y(0.0f));
+    const ImVec2 size((float)_tex_w * m.scale, (float)_tex_h * m.scale);
     const ImVec2 far_corner(origin.x + size.x, origin.y + size.y);
+    // The tools take the pointer off the picture too, anywhere on the pane.
+    const bool pointer = hovered && !space && !_panning;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(corner, pane_end, true);
+    dl->AddRectFilled(corner, pane_end, IM_COL32(24, 24, 24, 255));
     dl->AddImage((ImTextureID)(intptr_t)_tex, origin, far_corner);
     const app::FrameMask shown = resolved(stencil);
-    upload_stencil(shown);
-    if (_stencil_tex)
-        dl->AddImage((ImTextureID)(intptr_t)_stencil_tex, origin, far_corner);
-
+    const float win[4] = {std::max(0.0f, (corner.x - origin.x) / size.x),
+                          std::max(0.0f, (corner.y - origin.y) / size.y),
+                          std::min(1.0f, (pane_end.x - origin.x) / size.x),
+                          std::min(1.0f, (pane_end.y - origin.y) / size.y)};
+    if (win[2] > win[0] && win[3] > win[1]) {
+        const float vw = (win[2] - win[0]) * size.x, vh = (win[3] - win[1]) * size.y;
+        // 1024 bounds the re-raster a pan or a handle drag does every frame.
+        const float k = std::min(1.0f, 1024.0f / std::max(vw, vh));
+        upload_stencil(shown, win, std::max(8, (int)std::ceil(vw * k)),
+                       std::max(8, (int)std::ceil(vh * k)));
+    }
     auto to_screen = [&](float u, float v) {
         return ImVec2(origin.x + u * size.x, origin.y + v * size.y);
     };
+    if (_stencil_tex)
+        dl->AddImage((ImTextureID)(intptr_t)_stencil_tex,
+                     to_screen(_stencil_win[0], _stencil_win[1]),
+                     to_screen(_stencil_win[2], _stencil_win[3]));
+
     const PreviewFrame frame =
         _frames.empty() ? PreviewFrame{} : _frames[(size_t)_frame_idx];
-    const bool hovered = ImGui::IsItemHovered();
-    const ImGuiIO& io = ImGui::GetIO();
     std::vector<app::MaskShape>& shapes = scope(stencil).mask.shapes;
     if (_shape_sel >= (int)shapes.size()) _shape_sel = -1;
 
@@ -771,9 +868,9 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
         _drag_before = stencil;
         _drag_before_key = app::format_mask_shapes(shapes);
     };
-    if (points_now) on_shape = edit_points(stencil, *sel, mu, mv, size.x, size.y, hovered, edited);
+    if (points_now) on_shape = edit_points(stencil, *sel, mu, mv, size.x, size.y, pointer, edited);
     else if (pen_mode && pen_sel && !_pen.in_progress())
-        on_shape = pen_on_shape(stencil, *sel, mu, mv, size.x, size.y, hovered, edited);
+        on_shape = pen_on_shape(stencil, *sel, mu, mv, size.x, size.y, pointer, edited);
     if (selecting && sel && _pt_part == PenPart::None) {
         app::MaskShape& s = *sel;
         float hu[3], hv[3];
@@ -783,12 +880,12 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
             // `near` is a macro in the Windows headers; do not name it that.
             const bool hit = std::fabs(mouse.x - p.x) < 9.0f &&
                              std::fabs(mouse.y - p.y) < 9.0f;
-            on_shape |= hit && hovered;
+            on_shape |= hit && pointer;
             dl->AddCircleFilled(p, 6.0f, IM_COL32(255, 255, 255, 230));
             dl->AddCircle(p, 6.0f, IM_COL32(30, 30, 30, 220), 0, 1.5f);
-            if (hit && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) grab(i);
+            if (hit && pointer && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) grab(i);
         }
-        if (hovered && !on_shape && stencil_contains(s, mu, mv)) {
+        if (pointer && !on_shape && stencil_contains(s, mu, mv)) {
             on_shape = true;
             if (_drag_handle == -1 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 grab(kDragBody);
@@ -799,7 +896,7 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
     }
     // Points picks what it clicks, the topmost shape first, and lets go on
     // empty picture; the press that picks also starts moving it.
-    if (_draw == DrawTool::Points && hovered && !on_shape && _drag_handle == -1 &&
+    if (_draw == DrawTool::Points && pointer && !on_shape && _drag_handle == -1 &&
         _pt_part == PenPart::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         _shape_sel = -1;
         _pt_anchor = -1;
@@ -843,7 +940,7 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
         _drag_handle = -1;
     };
     ViewportInput in;
-    in.hovered = hovered && !on_shape && _drag_handle == -1;
+    in.hovered = pointer && !on_shape && _drag_handle == -1;
     in.x = mouse.x - origin.x;
     in.y = mouse.y - origin.y;
     in.W = (int)size.x;
@@ -851,7 +948,7 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
     in.down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     in.clicked = in.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     in.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-    in.right_clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    in.right_clicked = pointer && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     in.double_clicked = in.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     in.shift = io.KeyShift;
     in.ctrl = io.KeyCtrl;
@@ -956,9 +1053,11 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
         }
     }
 
-    // Clicks land in source-image pixels, which is what the model wants. Only
-    // with no drawing tool: every other one owns the left button.
-    const bool canvas_free = hovered && !on_shape && _drag_handle == -1 &&
+    // Clicks land in source-image pixels, which is what the model wants, so
+    // only on the picture. Only with no drawing tool: every other one owns the
+    // left button.
+    const bool on_picture = mu >= 0.0f && mu < 1.0f && mv >= 0.0f && mv < 1.0f;
+    const bool canvas_free = pointer && on_picture && !on_shape && _drag_handle == -1 &&
                              _draw == DrawTool::Select && !tool_consumed &&
                              _model.kind != MaskModelKind::Subject;
     if (!_listing.load() && !_frames.empty() && canvas_free &&
@@ -1041,6 +1140,7 @@ void SegmentPanel::draw_image(MaskSettings& settings, app::FrameStencil& stencil
                         IM_COL32(255, 255, 255, 255), 1.5f);
         }
     }
+    dl->PopClipRect();
     if (undo_request) undo_shapes(stencil, undo_request == 2, edited);
 }
 
@@ -1270,6 +1370,7 @@ void SegmentPanel::draw_tools(app::FrameStencil& stencil, bool& edited) {
             ui::TextDisabled(mmsg::path_straight);
         }
     }
+    ui::TextDisabledWrapped(mmsg::hint_view);
 
     // The keys, while nothing is being typed and no stroke is half drawn.
     const ImGuiIO& io = ImGui::GetIO();
@@ -1295,13 +1396,13 @@ void SegmentPanel::draw_tools(app::FrameStencil& stencil, bool& edited) {
 
 // One list goes where the tools draw; a per-camera set goes on the cameras it
 // names, with separate areas turned on, and refuses an input that has none.
-void SegmentPanel::load_file(app::FrameStencil& s, const std::string& path) {
+bool SegmentPanel::load_file(app::FrameStencil& s, const std::string& path) {
     app::MaskSet set;
     std::string err;
     if (!load_stencil_preset(path, set, err)) {
         _saved_msg = spirula::i18n::format(dmsg::stencil_load_failed, {err});
         _saved_msg_err = true;
-        return;
+        return false;
     }
     if (set.per_camera() && !_cameras.empty()) {
         std::string names;
@@ -1313,7 +1414,7 @@ void SegmentPanel::load_file(app::FrameStencil& s, const std::string& path) {
         if (!any) {
             _saved_msg = spirula::i18n::format(dmsg::stencil_set_no_camera, {names});
             _saved_msg_err = true;
-            return;
+            return false;
         }
     }
     bool edited = false;
@@ -1327,6 +1428,30 @@ void SegmentPanel::load_file(app::FrameStencil& s, const std::string& path) {
     _shape_sel = -1;
     _drag_handle = -1;
     _saved_msg.clear();
+    _editing.reset();
+    _needs_run = true;
+    return true;
+}
+
+void SegmentPanel::start_editing(app::FrameStencil& s, const StencilPreset& set) {
+    if (!load_file(s, set.path)) return;
+    _editing = set;
+    _save_name = set.name;
+}
+
+void SegmentPanel::show_camera(const std::string& camera) {
+    if (_src.is_video) {
+        const auto it = std::find(_folders.begin(), _folders.end(), camera);
+        if (it == _folders.end()) return;
+        _folder_idx = (int)(it - _folders.begin());
+    } else {
+        const auto it = std::find_if(_frames.begin(), _frames.end(), [&](const PreviewFrame& f) {
+            return file_camera(f.path) == camera;
+        });
+        if (it == _frames.end()) return;
+        _frame_idx = (int)(it - _frames.begin());
+    }
+    _frame_dirty = true;
     _needs_run = true;
 }
 
@@ -1336,22 +1461,33 @@ void SegmentPanel::draw_saved_areas(app::FrameStencil& s) {
         _in_dataset = list_dataset_stencils(_workspace);
         ImGui::OpenPopup("##stencilload");
     }
+    std::optional<StencilPreset> edit;
     if (ImGui::BeginPopup("##stencilload")) {
+        auto list = [&](const std::vector<StencilPreset>& sets, const char* id) {
+            for (const StencilPreset& p : sets) {
+                if (ui::SelectableRaw(stencil_preset_label(p) + id + p.path, false))
+                    load_file(s, p.path);
+                if (_set_menu.item(p)) edit = p;
+            }
+        };
         ui::SeparatorText(dmsg::stencil_saved_areas);
-        for (const StencilPreset& p : _saved)
-            if (ui::SelectableRaw(stencil_preset_label(p) + "##" + p.path, false))
-                load_file(s, p.path);
+        list(_saved, "##");
         // Kept by earlier runs into this output folder, saved or not.
         if (!_in_dataset.empty()) {
             ui::SeparatorText(dmsg::stencil_in_dataset);
-            for (const StencilPreset& p : _in_dataset)
-                if (ui::SelectableRaw(stencil_preset_label(p) + "##ds" + p.path, false))
-                    load_file(s, p.path);
+            list(_in_dataset, "##ds");
         }
         ImGui::Separator();
         if (ui::Selectable(dmsg::stencil_other_file)) _browse_requested = true;
+        if (edit) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    if (edit) start_editing(s, *edit);
+    if (const auto change = _set_menu.draw_dialogs(_saved_msg, _saved_msg_err))
+        if (_editing && _editing->path == change->was) {
+            _editing = change->now;
+            if (_editing) _save_name = _editing->name;
+        }
     // With separate areas on, the set is the whole input's: a file per camera
     // when the cameras differ.
     const app::MaskSet to_save =
@@ -1385,6 +1521,22 @@ void SegmentPanel::draw_saved_areas(app::FrameStencil& s) {
         ImGui::EndPopup();
     }
     ui::help_on_hover(dmsg::stencil_saved_areas);
+    if (_editing) {
+        ui::TextDisabledWrapped(dmsg::stencil_editing, {stencil_preset_label(*_editing)});
+        // A one-list set stays one, where Save... would write every camera's.
+        const app::MaskSet edited = _editing->cameras.empty()
+                                        ? app::MaskSet{scope(s).mask.shapes, {}}
+                                        : app::mask_set_of(s);
+        ImGui::BeginDisabled(edited.empty());
+        if (ui::SmallButton(dmsg::stencil_save_changes)) {
+            std::string err;
+            _saved_msg_err = !update_stencil_preset(*_editing, edited, err);
+            _saved_msg = spirula::i18n::format(
+                _saved_msg_err ? dmsg::stencil_save_failed : dmsg::stencil_saved_as,
+                {_saved_msg_err ? err : _editing->path});
+        }
+        ImGui::EndDisabled();
+    }
     if (!_saved_msg.empty()) {
         if (_saved_msg_err)
             ui::TextColoredWrappedRaw(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), _saved_msg);
@@ -1456,6 +1608,7 @@ void SegmentPanel::draw_stencil(app::FrameStencil& s, bool& edited) {
             start_detect();
         if (!_busy.load() && !_detecting.load() && !_listing.load() &&
             _border.found && shown_camera() == _border_camera) {
+            ImGui::SameLine();
             if (ui::SmallButton(dmsg::stencil_edit_border)) {
                 // The ellipse fits one lens: on a many-camera input it is that
                 // camera's, and the others keep their own fits.
@@ -1554,8 +1707,24 @@ void SegmentPanel::draw(MaskSettings& settings, app::FrameStencil& stencil) {
             _all_files = std::move(_all_files_pending);
             _folders = std::move(_folders_pending);
             _frames_ready = false;
+            _listing = false;
             _cameras = camera_names();
+            if (_target_frame) {
+                const int at = frame_position(*_target_frame);
+                _target_frame.reset();
+                if (at >= 0) {
+                    _frame_idx = at;
+                    _frame_dirty = true;
+                    _needs_run = true;
+                }
+            }
         }
+    }
+    if (_edit_request && !_listing.load()) {
+        const EditRequest request = std::move(*_edit_request);
+        _edit_request.reset();
+        show_camera(request.camera);
+        start_editing(stencil, request.set);
     }
     upload_preview();
     {
@@ -1657,7 +1826,7 @@ void SegmentPanel::draw(MaskSettings& settings, app::FrameStencil& stencil) {
     ImGui::SetNextItemWidth(-1);
     edited |= ui::InputTextEnglishRaw(
         "##prompt",
-        keep ? "the statue; its pedestal" : "person; car; shadow of a person",
+        keep ? "the statue; its pedestal" : "tourist; pedestrian; child; person; car; shadow of a person",
         &settings.prompt);
     ui::help_on_hover(keep ? dmsg::preview_prompt_help_keep
                            : dmsg::preview_prompt_help_remove);
@@ -1709,7 +1878,7 @@ void SegmentPanel::draw(MaskSettings& settings, app::FrameStencil& stencil) {
     draw_stencil(stencil, edited);
 
     // ---- which camera, then which frame ----
-    if (_folders.size() > 1) {
+    if (_folders.size() > 1 && _src.lens < 0) {
         ImGui::Spacing();
         ui::Text(dmsg::preview_camera);
         ImGui::SetNextItemWidth(-1);
@@ -1727,19 +1896,40 @@ void SegmentPanel::draw(MaskSettings& settings, app::FrameStencil& stencil) {
     }
     if (_frames.size() > 1) {
         ImGui::Spacing();
-        ImGui::SetNextItemWidth(-1);
         int idx = _frame_idx;
-        // The slider's own overlay format string: the index is substituted by
-        // ImGui, so this is not a place a placeholder can be used.
-        const std::string fmt = spirula::i18n::format(
-            dmsg::preview_frame, {(long long)_frames[(size_t)_frame_idx].index});
-        if (ui::SliderIntRaw("##frame", &idx, 0, (int)_frames.size() - 1,
-                             fmt.c_str())) {
-            _frame_idx = idx;
+        const int max_idx = (int)_frames.size() - 1;
+        const std::string slider_fmt = spirula::i18n::format(dmsg::preview_frame, {"%d"});
+
+        const float input_w = px(70.0f);
+        const float gap = px(4.0f);
+        const float slider_w = ImGui::GetContentRegionAvail().x - input_w - gap;
+
+        ImGui::SetNextItemWidth(slider_w);
+        if (ui::SliderIntRaw("##frame", &idx, 0, max_idx, slider_fmt.c_str())) {
+            _frame_idx = std::clamp(idx, 0, max_idx);
             _frame_dirty = true;
             _needs_run = true;
         }
         ui::help_on_hover(dmsg::preview_frame_help);
+
+        ImGui::SameLine(0.0f, gap);
+        ImGui::SetNextItemWidth(input_w);
+        int input_val = idx;
+        if (ui::InputIntRaw("##frame_input", &input_val)) {
+            input_val = std::clamp(input_val, 0, max_idx);
+            if (input_val != _frame_idx) {
+                _frame_idx = input_val;
+                _frame_dirty = true;
+                _needs_run = true;
+            }
+        }
+        ui::help_on_hover(dmsg::preview_frame_help);
+
+        if (!_src.is_video && !_frames[(size_t)_frame_idx].path.empty()) {
+            const std::string name =
+                fs::path(_frames[(size_t)_frame_idx].path).filename().string();
+            ui::TextDisabledRaw(elide_middle(name, panel_w - px(16.0f)));
+        }
     }
 
     ImGui::Spacing();
@@ -1758,15 +1948,31 @@ void SegmentPanel::draw(MaskSettings& settings, app::FrameStencil& stencil) {
 
     ImGui::Spacing();
     float kept_fraction = -1.0f, feature_fraction = -1.0f;
+    bool model_missing = false;
     {
         std::lock_guard<std::mutex> lk(_mu);
+        model_missing = _model_missing;
         // Segmentation errors and progress come from the inference layer.
         if (!_error.empty())
             ui::TextColoredWrappedRaw(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), _error);
-        else if (!_status.empty())
+        else if (!_status.empty() && !model_missing)
             ui::TextDisabledRaw(_status);
         kept_fraction = _kept_fraction;
         feature_fraction = _feature_fraction;
+    }
+    if (model_missing && !_pick_model) {
+        ui::TextColoredWrapped(ImVec4(1.0f, 0.45f, 0.45f, 1.0f),
+                               spirula::i18n::msg::log::err_no_model_selected);
+    } else if (model_missing) {
+        ui::TextColoredWrapped(ImVec4(0.95f, 0.75f, 0.30f, 1.0f), dmsg::preview_needs_model,
+                               {dmsg::mask_enable.get()});
+        const MaskModelFiles picked = _pick_model();
+        if (!picked.empty()) {
+            _model = picked;
+            _needs_run = true;
+            std::lock_guard<std::mutex> lk(_mu);
+            _model_missing = false;
+        }
     }
     if (kept_fraction >= 0.0f) {
         char pct[16];

@@ -12,6 +12,7 @@
 #include "app/gui/render/TransitionFx.h"
 #include "data/DatasetParser.h"
 
+#include <cstddef>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -136,7 +137,7 @@ void test_aim_and_lens() {
 
     Lens l;
     bool fov_ok = true;
-    for (Projection pr : {Projection::Perspective, Projection::Fisheye, Projection::Equisolid})
+    for (Projection pr : {Projection::Perspective, Projection::Fisheye, Projection::Equisolid, Projection::Orthographic})
         for (double fov : {30.0, 90.0, 150.0}) {
             l.projection = pr;
             lens_set_fov(l, fov);
@@ -157,6 +158,47 @@ void test_aim_and_lens() {
     z.motion.ease = false;
     const Trajectory zt(z);
     check(std::fabs(zt.at(1.0).lens.focal - 2.0) < 0.2, "halfway through a zoom is near the geometric mean");
+}
+
+void test_orthographic_lens() {
+    RenderProject p;
+    p.keys = {key(0, 0, 0, 0), key(1, 0, 0, -1), key(2, 0, 0, -2)};
+    p.motion.ease = false;
+    p.motion.curve = Curve::Linear;
+    for (int i : {0, 2}) {
+        auto& k = p.keys[(size_t)i];
+        k.own_lens = true;
+        k.lens.projection = Projection::Orthographic;
+        lens_set_fov(k.lens, 90);
+        k.lens.ortho_distance = i == 0 ? 2.0 : 8.0;
+    }
+    const Lens middle = p.lens_at(1);
+    const CameraState frame = Trajectory(p).at(1.0);
+    float intr[4], scaled[4];
+    lens_intrinsics(frame.lens, 800, 600, intr);
+    lens_intrinsics(frame.lens, 800, 600, scaled, 3.0);
+    check(middle.projection == Projection::Orthographic && std::abs(middle.ortho_distance - 4) < 1e-9 &&
+          std::abs(frame.lens.ortho_distance - 4) < 1e-9 && std::abs(intr[0] - 100) < 1e-5 &&
+          intr[0] == intr[1] && intr[2] == 400 && intr[3] == 300 && scaled[0] == 300,
+          "orthographic zoom interpolates and converts world units to renderer units");
+    const auto saved = project_from_json(project_to_json(p));
+    check(saved.keys[0].lens == p.keys[0].lens && saved.keys[2].lens == p.keys[2].lens,
+          "orthographic projection and framing survive a project round trip");
+    spirula::Sim3 move;
+    move.s = 3.0;
+    transform_project(p, move);
+    lens_intrinsics(Trajectory(p).at(1).lens, 800, 600, scaled);
+    check(std::abs(scaled[0] * move.s - intr[0]) < 1e-5,
+          "scaling a project preserves its orthographic framing");
+    p.keys[2].lens.projection = Projection::Perspective;
+    check(Trajectory(p).at(1.5).lens.projection == Projection::Orthographic &&
+          Trajectory(p).at(2).lens.projection == Projection::Perspective,
+          "orthographic projection changes at the keyframe");
+    Lens distorted = middle;
+    distorted.tier = 2;
+    distorted.dist[0] = -10;
+    check(!lens_needs_ut(distorted, 800, 600) && resolve_primitive("", "3dgs", distorted, 800, 600) == "3dgs",
+          "orthographic export uses the native 3DGS forward path");
 }
 
 void test_json_and_moves() {
@@ -670,22 +712,22 @@ void test_auto_primitive() {
 
 // Who is on screen when, and how far each is through its way in or out.
 void test_shot_mix() {
-    auto near = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
+    auto close_to = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
     Shot a, b;
     b.start = 4.0;
     b.transition = Transition::Crossfade;
     b.duration = 2.0;
     ShotMix m = shot_mix({a, b}, 5.0, 10.0);
-    check(m.in == 1 && m.out == 0 && near(m.u_in, 0.5) && !m.own,
+    check(m.in == 1 && m.out == 0 && close_to(m.u_in, 0.5) && !m.own,
           "a crossfade takes the one before out as the next comes in");
     Shot first;
     first.transition = Transition::Crossfade;
     first.duration = 2.0;
     m = shot_mix({first}, 1.0, 10.0);
-    check(m.in == 0 && m.out == -1 && near(m.u_in, 0.5) && !m.own,
+    check(m.in == 0 && m.out == -1 && close_to(m.u_in, 0.5) && !m.own,
           "the first shot can arrive from nothing");
     m = shot_mix({first}, 5.0, 10.0);
-    check(m.in == 0 && m.out == -1 && near(m.u_in, 1.0), "and is there once it has");
+    check(m.in == 0 && m.out == -1 && close_to(m.u_in, 1.0), "and is there once it has");
 
     // Leaving a second early, over two, as the next rains in over two.
     a.exit.own = true;
@@ -697,13 +739,13 @@ void test_shot_mix() {
     m = shot_mix(shots, 2.9, 10.0);
     check(m.in == 0 && m.out == -1 && !m.own, "before it leaves, the shot is simply there");
     m = shot_mix(shots, 3.5, 10.0);
-    check(m.in == -1 && m.out == 0 && near(m.u_out, 0.25) && m.own,
+    check(m.in == -1 && m.out == 0 && close_to(m.u_out, 0.25) && m.own,
           "leaving early, it goes before the next arrives");
     m = shot_mix(shots, 4.5, 10.0);
-    check(m.in == 1 && m.out == 0 && near(m.u_in, 0.25) && near(m.u_out, 0.75) && m.own,
+    check(m.in == 1 && m.out == 0 && close_to(m.u_in, 0.25) && close_to(m.u_out, 0.75) && m.own,
           "then the two overlap, each through its own");
     m = shot_mix(shots, 5.5, 10.0);
-    check(m.in == 1 && m.out == -1 && near(m.u_in, 0.75) && m.own,
+    check(m.in == 1 && m.out == -1 && close_to(m.u_in, 0.75) && m.own,
           "gone, while the next is still arriving");
     // Leaving a second after the next has come, at once: both whole meanwhile.
     Shot c = a, d = b;
@@ -711,7 +753,7 @@ void test_shot_mix() {
     c.exit.offset = 1.0;
     d.transition = Transition::Cut;
     m = shot_mix({c, d}, 4.5, 10.0);
-    check(m.in == 1 && m.out == 0 && near(m.u_in, 1.0) && near(m.u_out, 0.0) && m.own,
+    check(m.in == 1 && m.out == 0 && close_to(m.u_in, 1.0) && close_to(m.u_out, 0.0) && m.own,
           "a later way out keeps both on screen");
     m = shot_mix({c, d}, 5.5, 10.0);
     check(m.in == 1 && m.out == -1, "and a cut out takes it at once");
@@ -726,10 +768,10 @@ void test_shot_mix() {
     m = shot_mix({only}, 6.0, 10.0);
     check(m.in == 0 && m.out == -1 && !m.own, "the last shot is simply there before it leaves");
     m = shot_mix({only}, 8.0, 10.0);
-    check(m.in == -1 && m.out == 0 && near(m.u_out, 0.5) && m.own,
+    check(m.in == -1 && m.out == 0 && close_to(m.u_out, 0.5) && m.own,
           "then it leaves by its own way, ending at the end less the offset");
     m = shot_mix({only}, 9.5, 10.0);
-    check(m.out == 0 && near(m.u_out, 1.0), "and stays gone, into its colour, to the end");
+    check(m.out == 0 && close_to(m.u_out, 1.0), "and stays gone, into its colour, to the end");
 
     // An older file's fades become the first shot's dip in and the last's dip out.
     RenderProject old;
@@ -739,9 +781,9 @@ void test_shot_mix() {
     old.fade_out.seconds = 2.0;
     settle_shots(old);
     check(old.shots.size() == 1 && old.shots[0].transition == Transition::Dip &&
-              old.shots[0].colour[0] == 1.0f && near(old.shots[0].duration, 1.5) &&
+              old.shots[0].colour[0] == 1.0f && close_to(old.shots[0].duration, 1.5) &&
               old.shots[0].exit.own && old.shots[0].exit.transition == Transition::Dip &&
-              old.shots[0].exit.colour[0] == 0.0f && near(old.shots[0].exit.duration, 2.0) &&
+              old.shots[0].exit.colour[0] == 0.0f && close_to(old.shots[0].exit.duration, 2.0) &&
               old.fade_in.colour == FadeColour::None && old.fade_out.colour == FadeColour::None,
           "the old fades in and out become the shots' own");
     RenderProject kept;
@@ -1024,6 +1066,7 @@ int main() {
     test_keys_are_hit();
     test_constant_speed();
     test_aim_and_lens();
+    test_orthographic_lens();
     test_json_and_moves();
     test_dataset_lenses();
     test_spline_is_c2();

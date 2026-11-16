@@ -4,6 +4,7 @@
 
 #include "app/gui/Layout.h"
 #include "app/gui/Ui.h"
+#include "app/gui/ViewBookmarks.h"
 #include "app/gui/edit/MeshDoc.h"
 #include "app/gui/edit/PointsDoc.h"
 #include "app/gui/edit/SplatDoc.h"
@@ -227,6 +228,7 @@ void CompareView::attach(Model& m) {
                 [&m] { m.src.release_screen_buffers(); });
             break;
     }
+    bind_file_views(m.panel, m.path, m.src.file(), file_to_norm_of(m));
     m.attached = true;
     // Land on whatever the panes already showing are looking at, so a model
     // added to a view in progress does not arrive facing somewhere else.
@@ -456,6 +458,7 @@ void CompareView::begin_edit(int index) {
         _render.note_saved(saved, placement);
         const int n = render::copy_moved_projects(source, saved, placement, dir);
         if (n > 0) _log.push_back(spirula::i18n::format(rmsg::projects_moved, {(long long)n, dir}));
+        if (_on_model_saved) _on_model_saved(saved);
     });
 
     switch (m.src.kind()) {
@@ -599,6 +602,11 @@ const ParsedDataset* CompareView::run_dataset(const std::string& model_file) {
                 if (dir.is_relative()) dir = run / dir;
                 DatasetParserConfig pc;
                 pc.require_image_files = false;
+                for (auto [key, field] : {std::pair{"metashape_xml", &pc.metashape_xml},
+                                          std::pair{"metashape_ply", &pc.metashape_ply},
+                                          std::pair{"metashape_psx", &pc.metashape_psx}})
+                    if (const JsonValue* v = cfg.find(key); v && v->type == JsonValue::Type::String)
+                        *field = v->as_string();
                 auto ds = std::make_unique<ParsedDataset>(parse_dataset(dir.string(), pc, ""));
                 // The run may have trained in a frame of its own; its
                 // scene_transform.json says how to get there.
@@ -676,8 +684,13 @@ void CompareView::feed_render() {
                 double a[12];
                 for (int k = 0; k < 12; k++) a[k] = A[k];
                 file_to_norm = spirula::Sim3::from_3x4(a);
-                si.has_up = true;
-                for (int k = 0; k < 3; k++) si.up[k] = v.ds->normalized_rotation[6 + k];
+                // Up as the pane shows it: the parsers' guess while it levels
+                // the cameras, else the file's own +Z, which a measured or
+                // hand-placed frame is known to have.
+                const bool level = m.panel.level_cameras();
+                si.has_up = level || v.ds->gauge_oriented || v.ds->edited_in_place;
+                for (int k = 0; k < 3; k++)
+                    si.up[k] = level ? v.ds->normalized_rotation[6 + k] : (k == 2 ? 1.0 : 0.0);
                 break;
             }
             case SplatViewer::Kind::Mesh:
@@ -836,22 +849,31 @@ void CompareView::draw_toolbar() {
         EditDoc* d = _edit.doc();
         const int linked = d ? d->linked_count() : 0;
         if (linked > 0) ui::TextDisabledWrapped(emsg::mesh_link_edits_help);
+        // Waited for, so the pane reads back what was written; a save that
+        // failed keeps the editor open with its error.
+        auto save = [this, d, &finish] {
+            _edit.save_in_place();
+            _edit.wait_for_save();
+            if (d && d->dirty()) {
+                _discard_then = nullptr;
+                ImGui::CloseCurrentPopup();
+            } else {
+                finish();
+            }
+        };
         ImGui::BeginDisabled(!_edit.can_save_in_place());
         if (linked > 0) {
             if (ui::Button(emsg::save_this_only)) {
                 d->set_linked(false);
-                _edit.save_in_place();
-                finish();
+                save();
             }
             ImGui::SameLine();
             if (ui::Button(emsg::save_all_files, {(long long)(linked + 1)})) {
                 d->set_linked(true);
-                _edit.save_in_place();
-                finish();
+                save();
             }
         } else if (ui::Button(emsg::save_over)) {
-            _edit.save_in_place();
-            finish();
+            save();
         }
         ImGui::EndDisabled();
         if (linked == 0) ImGui::SameLine();
@@ -893,12 +915,15 @@ void CompareView::draw_toolbar() {
     }
     if (count() > 1) {
         ImGui::SameLine();
+        ImGui::BeginDisabled(_wipe);
         ui::Checkbox(msg::compare_link_views, &_link);
+        ImGui::EndDisabled();
         ui::help_on_hover(msg::compare_link_views_help);
+        ImGui::SameLine();
+        if (ui::Checkbox(msg::compare_wipe, &_wipe) && _wipe) _link = true;
+        ui::help_on_hover(msg::compare_wipe_help);
     }
-    // One camera, so one set of navigation controls -- and drawing them here
-    // rather than in the first pane is what keeps every pane's image the same
-    // size, which is the whole point of the layout.
+    // Shared controls keep every pane's image the same size.
     if (_link && !_models.empty() && _models[0]->attached)
         _models[0]->panel.draw_nav_controls();
 }
@@ -1008,6 +1033,11 @@ void CompareView::draw_pane(int index, const ImVec2& size, const std::function<v
             ui::TextDisabled(msg::viewer_mesh_count,
                              {(long long)m.src.num_splats(),
                               (long long)m.src.num_faces()});
+        else if (m.src.sb_lobes() > 0)
+            ui::TextDisabled(msg::viewer_splat_count_sb,
+                             {(long long)m.src.num_splats(),
+                              (long long)m.src.sh_degree(),
+                              (long long)m.src.sb_lobes()});
         else
             ui::TextDisabled(msg::viewer_splat_count,
                              {(long long)m.src.num_splats(),
@@ -1066,6 +1096,10 @@ void CompareView::draw(float height) {
     }
 
     const ImGuiStyle& st = ImGui::GetStyle();
+    const bool wipe = _wipe && n >= 2 && _edit_index < 0 && _render_index < 0 &&
+        std::all_of(_models.begin(), _models.end(), [](const auto& m) { return m->attached; });
+    // Clearing the active pane's wipe would end its divider drag.
+    for (int i = wipe ? 1 : 0; i < n; ++i) _models[i]->panel.set_wipe();
     // Rendering: the primary pane, and the camera's own view where the
     // render panel asks for it. The other models are sources, not panes.
     if (_render_index >= 0 && _render_index < n) {
@@ -1102,7 +1136,30 @@ void CompareView::draw(float height) {
         _controls_h = 0.0f;
         return;
     }
-    if (n <= 3) {
+    if (wipe) {
+        Model& a = *_models[0];
+        if (_wipe_count != n) {
+            _wipe_count = n;
+            _wipe_splits.resize(n == 4 ? 2 : (size_t)(n - 1));
+            for (size_t i = 0; i < _wipe_splits.size(); ++i)
+                _wipe_splits[i] = n == 4 ? 0.5f : (float)(i + 1) / n;
+        }
+        std::vector<ViewportPanel::WipeSource> sources;
+        for (auto& m : _models) {
+            std::string name = m->title ? std::string(m->title->get()) :
+                display_name(m->src.file().empty() ? m->path : m->src.file());
+            sources.push_back({&m->panel, std::move(name)});
+        }
+        a.panel.set_wipe(std::move(sources), &_wipe_splits);
+        draw_pane(0, avail);
+        float w = 0.0f, h = 0.0f;
+        a.panel.last_avail(w, h);
+        for (int i = 1; i < n; ++i) {
+            auto& panel = _models[(size_t)i]->panel;
+            panel.sync_view_from(a.panel);
+            if (w > 0.0f && h > 0.0f) panel.render_only(ImVec2(w, h));
+        }
+    } else if (n <= 3) {
         const float w = (avail.x - st.ItemSpacing.x * (n - 1)) / n;
         for (int i = 0; i < n; i++) {
             if (i) ImGui::SameLine();
@@ -1126,7 +1183,7 @@ void CompareView::draw(float height) {
 
     // The link, applied after every pane has handled its input.
     if (_link && n > 1) {
-        ViewportPanel* master = link_master();
+        ViewportPanel* master = wipe ? &_models[0]->panel : link_master();
         if (master)
             for (auto& m : _models)
                 if (&m->panel != master) m->panel.sync_view_from(*master);
