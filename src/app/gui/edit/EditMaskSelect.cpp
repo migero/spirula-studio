@@ -12,6 +12,7 @@
 #include "app/FrameLook.h"
 #include "app/gui/Layout.h"
 #include "app/gui/ModelCache.h"
+#include "app/gui/PreviewTexture.h"
 #include "app/gui/Ui.h"
 #include "data/CameraMath.h"
 #include "i18n/catalog/Edit.h"
@@ -54,6 +55,22 @@ nn::Image decode_capped(const std::string& file, sfm::ExifTransform& turn) {
         img = nn::resize_image(img, img.width * kMaskCap / longer,
                                img.height * kMaskCap / longer);
     return img;
+}
+
+// The frame with the mask shaded over it, small enough to upload per camera.
+constexpr int kThumbCap = 480;
+
+void shade(nn::Image& img, const sam::Mask& mask) {
+    for (size_t k = 0; k < img.data.size(); k += 3) {
+        if (!mask.data[k / 3]) continue;
+        img.data[k] = (uint8_t)((img.data[k] + 255) / 2);
+        img.data[k + 1] = (uint8_t)((img.data[k + 1] + 80) / 2);
+        img.data[k + 2] = (uint8_t)((img.data[k + 2] + 80) / 2);
+    }
+    const int longer = std::max(img.width, img.height);
+    if (longer > kThumbCap)
+        img = nn::resize_image(img, img.width * kThumbCap / longer,
+                               img.height * kThumbCap / longer);
 }
 
 }  // namespace
@@ -110,6 +127,85 @@ void EditSession::draw_mask_section(EditDoc& d, float full) {
                                                    : st.Colors[ImGuiCol_Text],
                                   _mask_status);
     }
+    drain_mask_thumbs();
+    draw_mask_preview();
+}
+
+void EditSession::drain_mask_thumbs() {
+    std::vector<MaskThumb> taken;
+    {
+        std::lock_guard<std::mutex> lk(_mask_thumb_mutex);
+        if (_mask_thumbs.empty()) return;
+        taken = std::move(_mask_thumbs);
+        _mask_thumbs.clear();
+    }
+    for (auto& t : taken) {
+        auto it = std::find_if(_mask_view.begin(), _mask_view.end(),
+                               [&](const MaskThumb& v) {
+                                   return v.camera == t.camera;
+                               });
+        if (it != _mask_view.end()) *it = std::move(t);
+        else _mask_view.push_back(std::move(t));
+    }
+}
+
+// A floating window of the frames the job has masked so far, shaded where
+// the prompt matched -- separate from the viewport, so nothing obscures the
+// 3D view. Thumbnails upload once per run; the frame copies them.
+void EditSession::draw_mask_preview() {
+    struct ThumbTex {
+        PreviewTexture tex;
+        int camera = -1, run = -1;
+        ~ThumbTex() { tex.reset(); }
+    };
+    static std::vector<ThumbTex> texs;
+
+    if (_mask_view.empty()) {
+        texs.clear();
+        return;
+    }
+    if (!_mask_show_preview) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x * 0.5f, vp->WorkSize.y * 0.5f),
+                             ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(ui::detail::label(msg::mask_preview_title),
+                      &_mask_show_preview)) {
+        ImGui::End();
+        return;
+    }
+    ui::TextWrapped(msg::mask_preview_legend);
+
+    const float cell = px(260.0f);
+    const float pad = ImGui::GetStyle().ItemSpacing.x;
+    float row = 0.0f;
+    for (size_t i = 0; i < _mask_view.size(); i++) {
+        const MaskThumb& t = _mask_view[i];
+        if (i) {
+            if (row + pad + cell <= ImGui::GetContentRegionAvail().x)
+                ImGui::SameLine();
+            else
+                row = 0.0f;
+        }
+        ThumbTex* tt = nullptr;
+        for (auto& e : texs)
+            if (e.camera == t.camera) { tt = &e; break; }
+        if (!tt) {
+            texs.push_back(ThumbTex{});
+            tt = &texs.back();
+            tt->camera = t.camera;
+            tt->run = _mask_run_id;
+            tt->tex.upload(t.rgb.data(), t.w, t.h);
+        } else if (tt->run != _mask_run_id || !tt->tex.ready()) {
+            tt->run = _mask_run_id;
+            tt->tex.upload(t.rgb.data(), t.w, t.h);
+        }
+        if (!tt->tex.ready()) continue;
+        const float s = cell / (float)t.w;
+        ImGui::Image(tt->tex.id(), ImVec2(cell, (float)t.h * s));
+        ui::TextDisabledRaw(("#" + std::to_string(t.camera + 1)).c_str());
+        row += cell + pad;
+    }
+    ImGui::End();
 }
 
 void EditSession::start_mask_select() {
@@ -152,6 +248,13 @@ void EditSession::start_mask_select() {
     _mask_status_err = false;
     _mask_error.clear();
     _mask_result.clear();
+    {
+        std::lock_guard<std::mutex> lk(_mask_thumb_mutex);
+        _mask_thumbs.clear();
+    }
+    _mask_view.clear();
+    _mask_run_id++;
+    _mask_show_preview = true;
     _mask_done = 0;
     _mask_total = pick;
     _mask_busy = true;
@@ -187,6 +290,20 @@ void EditSession::start_mask_select() {
                                 nullptr, ds->image_filenames[(size_t)c])) {
                     _mask_error = masker.lastError();
                     break;
+                }
+                // Shaded with the UPRIGHT mask before the turn back; the
+                // sampling below still gets the file-frame mask, and the
+                // move preserves img's width/height for it.
+                {
+                    nn::Image ov = std::move(img);
+                    shade(ov, mask);
+                    EditSession::MaskThumb t;
+                    t.camera = c;
+                    t.w = ov.width;
+                    t.h = ov.height;
+                    t.rgb = std::move(ov.data);
+                    std::lock_guard<std::mutex> lk(_mask_thumb_mutex);
+                    _mask_thumbs.push_back(std::move(t));
                 }
                 // The mask comes back upright; the camera's frame is the
                 // file's, so the EXIF turn goes back before sampling.

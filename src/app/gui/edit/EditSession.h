@@ -24,6 +24,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -134,6 +135,15 @@ public:
     void set_mask_device_gate(SamDeviceGate gate) {
         _mask_device_gate = std::move(gate);
     }
+    // What the mask job masks, as RGB thumbnails for the preview window.
+    struct MaskThumb {
+        int camera = 0;
+        int w = 0, h = 0;
+        std::vector<uint8_t> rgb;
+    };
+    void draw_mask_preview();
+    void drain_mask_thumbs();
+
     // One line under the viewport: the active tool and its keys.
     void draw_status();
 
@@ -406,6 +416,11 @@ private:
     float _mask_min_frac = 1.0f;
     std::string _mask_status;
     bool _mask_status_err = false;
+    std::mutex _mask_thumb_mutex;
+    std::vector<MaskThumb> _mask_thumbs;   // the worker appends finished ones
+    std::vector<MaskThumb> _mask_view;     // the GUI's copy, drained per frame
+    bool _mask_show_preview = true;
+    int _mask_run_id = 0;
     MaskModelUi _mask_model_ui;
     MaskModelFilesFn _mask_model_files;
     SamDeviceGate _mask_device_gate;

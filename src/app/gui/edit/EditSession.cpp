@@ -93,6 +93,14 @@ void EditSession::close() {
     _attr_busy = false;
     _marker_busy = false;
     _mask_busy = false;
+    _mask_result.clear();
+    {
+        std::lock_guard<std::mutex> lk(_mask_thumb_mutex);
+        _mask_thumbs.clear();
+    }
+    _mask_view.clear();
+    _mask_run_id++;
+    _mask_status.clear();
     _markers.clear();
     _markers_file.clear();
     _marker_dataset = {};
