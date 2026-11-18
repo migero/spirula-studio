@@ -948,6 +948,7 @@ private:
     std::string _resume_error;
     bool _open_resume_error = false;
     bool _show_preview = true;
+    bool _ds_focus = false;             // ^: the form column gives way to the view
     // Which view the panel shows: -1 follows the running step, otherwise the
     // one the user picked and wants to keep.
     int _preview_tab = -1;

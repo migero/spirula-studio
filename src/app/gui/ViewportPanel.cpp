@@ -1798,7 +1798,17 @@ void ViewportPanel::draw_nav_controls() {
 
 void ViewportPanel::draw(bool training, int step) {
     const float y0 = ImGui::GetCursorPosY();
-    draw_controls(_mode == Mode::Engine);
+    // The toggle first, so the controls it does not hide start beside it.
+    if (ui::ArrowButtonRaw("##controls", _controls_shown ? ImGuiDir_Up : ImGuiDir_Down)) {
+        _controls_shown = !_controls_shown;
+        if (!_controls_shown) _controls_pad = 0.0f;
+    }
+    ui::help_on_hover_raw(_controls_shown ? msg::viewport_hide_controls.get()
+                                          : msg::viewport_show_controls.get());
+    if (_controls_shown) {
+        ImGui::SameLine();
+        draw_controls(_mode == Mode::Engine);
+    }
     _controls_h = ImGui::GetCursorPosY() - y0;
     if (_controls_pad > 0.0f) ImGui::Dummy(ImVec2(1.0f, _controls_pad));
 

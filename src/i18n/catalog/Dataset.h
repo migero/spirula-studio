@@ -408,6 +408,36 @@ SS_MSG(show_run_preview_help,
     RU("Показывает извлечённые кадры, совпадения или строящуюся модель текущего этапа. Исключённые области красные: проверьте результат запроса."),
     TR("Geçerli adımın çıkarılan karelerini, eşleşmelerini veya oluşan modelini gösterir. İstemi denetlemek için dışlanan alanlar kırmızı gösterilir."));
 
+SS_MSG(focus_hide_help,
+    EN("Hide the settings column so the view uses the whole panel."),
+    JA("設定列を隠して、ビューをパネル全体に広げます。"),
+    ZH_HANS("隐藏设置栏，让视图占满整个面板。"),
+    ZH_HANT("隱藏設定欄，讓檢視佔滿整個面板。"),
+    KO("설정 열을 숨겨 뷰가 패널 전체를 사용합니다."),
+    DE("Die Einstellungsspalte ausblenden, damit die Ansicht das ganze Feld nutzt."),
+    FR("Masquer la colonne de réglages pour que la vue occupe tout le panneau."),
+    ES("Oculta la columna de ajustes para que la vista use todo el panel."),
+    PT("Oculta a coluna de ajustes para que a visão use o painel inteiro."),
+    IT("Nasconde la colonna delle impostazioni così la vista usa tutto il pannello."),
+    NL("De instellingenkolom verbergen zodat de weergave het hele paneel gebruikt."),
+    RU("Скрыть столбец настроек, чтобы вид занял всю панель."),
+    TR("Ayarlar sütununu gizleyerek görünümün tüm paneli kullanmasını sağlar."));
+
+SS_MSG(focus_show_help,
+    EN("Show the settings column again."),
+    JA("設定列を再表示します。"),
+    ZH_HANS("重新显示设置栏。"),
+    ZH_HANT("重新顯示設定欄。"),
+    KO("설정 열을 다시 표시합니다."),
+    DE("Die Einstellungsspalte wieder einblenden."),
+    FR("Afficher de nouveau la colonne de réglages."),
+    ES("Vuelve a mostrar la columna de ajustes."),
+    PT("Mostra a coluna de ajustes novamente."),
+    IT("Mostra di nuovo la colonna delle impostazioni."),
+    NL("De instellingenkolom weer tonen."),
+    RU("Снова показать столбец настроек."),
+    TR("Ayarlar sütununu yeniden gösterir."));
+
 // ---------------------------------------------------------------------------
 // What the preview panel shows: frames, the match matrix, the model
 // ---------------------------------------------------------------------------

@@ -3542,6 +3542,24 @@ SS_MSG(confirm_stop,
 // Viewport
 // ===========================================================================
 
+SS_MSG(viewport_hide_controls,
+    EN("Hide view controls"),
+    JA("ビュー操作を隠す"), ZH_HANS("隐藏视图控件"), ZH_HANT("隱藏檢視控制項"),
+    KO("뷰 컨트롤 숨기기"), DE("Ansichtssteuerung ausblenden"),
+    FR("Masquer les commandes de la vue"), ES("Ocultar los controles de vista"),
+    PT("Ocultar os controlos da vista"), IT("Nasconde i controlli vista"),
+    NL("Weergavebesturing verbergen"), RU("Скрыть управление видом"),
+    TR("Görünüm denetimlerini gizle"));
+
+SS_MSG(viewport_show_controls,
+    EN("Show view controls"),
+    JA("ビュー操作を表示"), ZH_HANS("显示视图控件"), ZH_HANT("顯示檢視控制項"),
+    KO("뷰 컨트롤 표시"), DE("Ansichtssteuerung einblenden"),
+    FR("Afficher les commandes de la vue"), ES("Mostrar los controles de vista"),
+    PT("Mostrar os controlos da vista"), IT("Mostra i controlli vista"),
+    NL("Weergavebesturing tonen"), RU("Показать управление видом"),
+    TR("Görünüm denetimlerini göster"));
+
 SS_MSG(viewport_dataset_preview,
     EN("dataset preview"), JA("データセットのプレビュー"), ZH_HANS("数据集预览"),
     ZH_HANT("資料集預覽"), KO("데이터셋 미리보기"), DE("Datensatzvorschau"),

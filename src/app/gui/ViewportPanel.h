@@ -102,6 +102,9 @@ public:
     // The image this wide, left-aligned under controls that keep the whole
     // width; the owner draws beside it. 0 = all of it.
     void set_image_width(float w) { _image_w = w; }
+    // Collapses the controls row to just the toggle, giving the view the room.
+    void set_controls_shown(bool on) { _controls_shown = on; }
+    bool controls_shown() const { return _controls_shown; }
 
     // An editing tool over this viewport. While one is installed it owns the
     // left button; the other two stay with navigation, so a tool is never a
@@ -433,6 +436,7 @@ private:
     // pointer coordinates and its overlay are both in.
     float _img_x = 0, _img_y = 0, _img_w = 0, _img_h = 0;
     bool _nav_controls = true;
+    bool _controls_shown = true;
     float _controls_h = 0.0f;
     float _controls_pad = 0.0f;
     float _image_w = 0.0f;

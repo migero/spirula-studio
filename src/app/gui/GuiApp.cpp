@@ -7755,6 +7755,11 @@ void GuiApp::draw_dataset_preview(float height) {
         save_settings();
     }
     ui::help_on_hover(dmsg::show_run_preview_help);
+    // The ^ toggle: the form column and the step strip give way to the view.
+    ImGui::SameLine();
+    if (ui::ArrowButtonRaw("##dsfocus", _ds_focus ? ImGuiDir_Down : ImGuiDir_Up))
+        _ds_focus = !_ds_focus;
+    ui::help_on_hover(_ds_focus ? dmsg::focus_show_help : dmsg::focus_hide_help);
     if (!_show_preview) return;
     if (!_dense_preview_error.empty()) {
         ui::TextWrapped(spirula::i18n::msg::dense::preview_paused, {_dense_preview_error});
@@ -7867,10 +7872,9 @@ void GuiApp::draw_dataset_preview(float height) {
         ui::TextDisabledWrapped(dmsg::model_waiting);
         return;
     }
-    // Width capped against the height: the band is as wide as the window, and
-    // a 1600x150 letterbox of a 90-degree view shows a slice of the scene with
-    // everything in it apparently enormous.
-    const float w = std::min(ImGui::GetContentRegionAvail().x, h * 16.0f / 9.0f);
+    // The view takes the pane's whole width; the splitter above sizes it, and
+    // the controls toggle frees more when the user wants all of it.
+    const float w = ImGui::GetContentRegionAvail().x;
     ImGui::BeginChild("##livemodel", ImVec2(w, h));
     _model_view.draw(/*training=*/false);
     ImGui::EndChild();
@@ -9485,7 +9489,13 @@ void GuiApp::draw_new_dataset() {
     const bool two_col = (preview_has_content() || source_preview_available()) && wide;
 
     ImGui::BeginChild("##dsbody", ImVec2(0, body_height(log_h) - strip_h));
-    if (two_col) {
+    if (two_col && _ds_focus) {
+        // Focus: the whole body is the preview, the step strip over it.
+        ImGui::BeginGroup();
+        if (running) draw_dataset_steps();
+        draw_dataset_right(ImGui::GetContentRegionAvail().y);
+        ImGui::EndGroup();
+    } else if (two_col) {
         const float w = std::clamp(_ds_panel_w * ui_scale(), px(320.0f),
                                    std::max(px(320.0f),
                                             ImGui::GetContentRegionAvail().x * 0.6f));
