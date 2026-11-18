@@ -105,6 +105,9 @@ public:
     // Collapses the controls row to just the toggle, giving the view the room.
     void set_controls_shown(bool on) { _controls_shown = on; }
     bool controls_shown() const { return _controls_shown; }
+    // False also hides the toggle itself: an owner that collapses the
+    // controls from outside leaves one arrow, its own.
+    void set_controls_toggle_visible(bool on) { _toggle_visible = on; }
 
     // An editing tool over this viewport. While one is installed it owns the
     // left button; the other two stay with navigation, so a tool is never a
@@ -437,6 +440,7 @@ private:
     float _img_x = 0, _img_y = 0, _img_w = 0, _img_h = 0;
     bool _nav_controls = true;
     bool _controls_shown = true;
+    bool _toggle_visible = true;
     float _controls_h = 0.0f;
     float _controls_pad = 0.0f;
     float _image_w = 0.0f;

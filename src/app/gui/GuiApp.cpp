@@ -7065,17 +7065,21 @@ void draw_run_steps(const RunProgress& prog, const std::vector<RunStep>& steps) 
     }
 }
 
-// The views that have something to show, as a row of choices; the one drawn
-// follows `implied`, the running step's, until the user picks one. -1 when
-// none has anything.
-int draw_view_tabs(const Msg* const* names, const bool* avail, const int* order, int n,
-                   int implied, int& pinned) {
+// The view that would be drawn: the pinned one, else the running step's,
+// else the first with something. -1 when none has anything.
+int pick_view_tab(const bool* avail, const int* order, int n, int implied, int pinned) {
     int tab = pinned >= 0 ? pinned : (implied >= 0 ? implied : 0);
     if (!avail[tab]) {
         tab = -1;
         for (int k = 0; k < n && tab < 0; k++)
             if (avail[order[k]]) tab = order[k];
     }
+    return tab;
+}
+
+int draw_view_tabs(const Msg* const* names, const bool* avail, const int* order, int n,
+                   int implied, int& pinned) {
+    int tab = pick_view_tab(avail, order, n, implied, pinned);
     bool first = true;
     for (int k = 0; k < n; k++) {
         const int i = order[k];
@@ -7179,12 +7183,15 @@ void GuiApp::close_source_preview() {
 void GuiApp::draw_dataset_right(float height) {
     const bool run = run_preview_available();
     const bool input = source_preview_available();
-    if (run && input) {
-        if (ui::RadioButton(svmsg::pane_input, _right_input)) _right_input = true;
-        ui::help_on_hover(svmsg::pane_input_help);
-        ImGui::SameLine();
-        if (ui::RadioButton(svmsg::pane_run, !_right_input)) _right_input = false;
-        ui::help_on_hover(svmsg::pane_run_help);
+    // Focus hides the radios with everything else; the pane keeps its pick.
+    if (!_ds_focus) {
+        if (run && input) {
+            if (ui::RadioButton(svmsg::pane_input, _right_input)) _right_input = true;
+            ui::help_on_hover(svmsg::pane_input_help);
+            ImGui::SameLine();
+            if (ui::RadioButton(svmsg::pane_run, !_right_input)) _right_input = false;
+            ui::help_on_hover(svmsg::pane_run_help);
+        }
     }
     if (input && (!run || _right_input)) {
         draw_source_preview(height);
@@ -7741,21 +7748,25 @@ void GuiApp::draw_dataset_preview(float height) {
     for (bool v : avail) any_avail = any_avail || v;
     if (!any_avail && _dense_preview_error.empty() && !_dense_live) return;
 
-    ImGui::SameLine();
-    if (ui::Checkbox(dmsg::show_run_preview, &_show_preview)) {
-        _dense_polled_at = -1.0;
-        _dense_refresh_seconds = 0.5;
-        _dense_preview_error.clear();
-        if (!_show_preview && (_dense_live || _dense_model_mtime != 0)) {
-            _dense_live = true;
-            _model_view.detach(); _model_view.destroy_gl();
-            _live_model = LiveModel{}; _model_attached = false;
-            _dense_model_mtime = 0;
+    // The ^ toggle, the one arrow in focus mode: the form column, the step
+    // radios, this checkbox and the view's own controls all give way. It sits
+    // at the end of the elapsed/ETA row, which stays visible in focus mode.
+    if (!_ds_focus) {
+        ImGui::SameLine();
+        if (ui::Checkbox(dmsg::show_run_preview, &_show_preview)) {
+            _dense_polled_at = -1.0;
+            _dense_refresh_seconds = 0.5;
+            _dense_preview_error.clear();
+            if (!_show_preview && (_dense_live || _dense_model_mtime != 0)) {
+                _dense_live = true;
+                _model_view.detach(); _model_view.destroy_gl();
+                _live_model = LiveModel{}; _model_attached = false;
+                _dense_model_mtime = 0;
+            }
+            save_settings();
         }
-        save_settings();
+        ui::help_on_hover(dmsg::show_run_preview_help);
     }
-    ui::help_on_hover(dmsg::show_run_preview_help);
-    // The ^ toggle: the form column and the step strip give way to the view.
     ImGui::SameLine();
     if (ui::ArrowButtonRaw("##dsfocus", _ds_focus ? ImGuiDir_Down : ImGuiDir_Up))
         _ds_focus = !_ds_focus;
@@ -7778,7 +7789,15 @@ void GuiApp::draw_dataset_preview(float height) {
     // In the order a run reaches them: the frames are sorted before anything
     // is made from them.
     const int order[8] = {0, 7, 6, 1, 2, 3, 4, 5};
-    const int tab = draw_view_tabs(names, avail, order, 8, implied, _preview_tab);
+    int tab;
+    if (_ds_focus) {
+        // No radio row in focus mode: the view follows the run until unfocused.
+        tab = pick_view_tab(avail, order, 8, implied,
+                            dataset_busy() ? -1 : _preview_tab);
+        _preview_tab = tab == implied ? -1 : tab;
+    } else {
+        tab = draw_view_tabs(names, avail, order, 8, implied, _preview_tab);
+    }
     if (tab == 3) ui::help_on_hover(dmsg::matrix_help_edit, {dmsg::matrix_help.get()});
     if (tab == 6) ui::help_on_hover(dmsg::frame_spacing_help);
     if (tab == 7) ui::help_on_hover(dmsg::sharpness_view_help);
@@ -7857,21 +7876,26 @@ void GuiApp::draw_dataset_preview(float height) {
         ImGui::EndChild();
         return;
     }
-    ui::Text(dmsg::model_live_counts,
-             {(long long)_live_model.n_registered, (long long)_live_model.n_images,
-              (long long)_live_model.n_points});
-    if (_live_model.provisional) {
-        ui::TextDisabledWrapped(spirula::i18n::msg::dense::provisional_preview);
-        ui::help_on_hover(spirula::i18n::msg::dense::live_phase_help);
-    }
-    if (_live_model.filtered) {
-        ui::TextDisabledWrapped(spirula::i18n::msg::dense::filtered_preview);
-        ui::help_on_hover(spirula::i18n::msg::dense::live_phase_help);
+    if (!_ds_focus) {
+        ui::Text(dmsg::model_live_counts,
+                 {(long long)_live_model.n_registered, (long long)_live_model.n_images,
+                  (long long)_live_model.n_points});
+        if (_live_model.provisional) {
+            ui::TextDisabledWrapped(spirula::i18n::msg::dense::provisional_preview);
+            ui::help_on_hover(spirula::i18n::msg::dense::live_phase_help);
+        }
+        if (_live_model.filtered) {
+            ui::TextDisabledWrapped(spirula::i18n::msg::dense::filtered_preview);
+            ui::help_on_hover(spirula::i18n::msg::dense::live_phase_help);
+        }
     }
     if (_live_model.empty()) {
         ui::TextDisabledWrapped(dmsg::model_waiting);
         return;
     }
+    // Focus drives the view's own controls too, so the pane holds one arrow.
+    _model_view.set_controls_shown(!_ds_focus);
+    _model_view.set_controls_toggle_visible(!_ds_focus);
     // The view takes the pane's whole width; the splitter above sizes it, and
     // the controls toggle frees more when the user wants all of it.
     const float w = ImGui::GetContentRegionAvail().x;
