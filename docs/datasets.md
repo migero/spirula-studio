@@ -285,9 +285,10 @@ trainer re-reads `points3D.bin` at every start.
 
 They are written with an **empty track**: no image saw them, so they join no
 track, are filtered by no track-length rule, and claim no keypoint. That is also
-how the trainer tells them from triangulated points -- `seed_splats()` takes
-its initial 4-NN scale over the triangulated ones only, since a dome's points
-sit metres from anything and in the mean would scale the whole scene up. COLMAP
+how the trainer tells them from triangulated points -- `seed_splats()` sizes a
+trackless point by its own 4-NN distance, which on a dome is the shell's point
+spacing, doubled for overlap: a ground point's spacing is far too small up
+there on a dense cloud. COLMAP
 `points3D.bin` has no normal field, so the inward-facing normals the Metashape
 script writes have no representation here; the trainer derives splat
 orientation itself.
